@@ -21,6 +21,7 @@ import argparse
 from datetime import datetime, timedelta
 
 import requests
+import certifi
 import xml.etree.ElementTree as ET
 
 import tensorflow as tf
@@ -195,7 +196,7 @@ class TinkoffFundamentalLoader:
                 json=payload,
                 headers=self.headers,
                 timeout=10,
-                verify=False
+                verify=certifi.where()
             )
             if resp.status_code != 200:
                 logger.error(f"API Error (Shares): {resp.status_code} {resp.text}")
@@ -228,7 +229,7 @@ class TinkoffFundamentalLoader:
                 json=payload,
                 headers=self.headers,
                 timeout=10,
-                verify=False
+                verify=certifi.where()
             )
             logger.info(f"RAW API RESPONSE: {resp.text[:500]}...")
             if resp.status_code != 200:
