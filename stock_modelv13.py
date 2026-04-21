@@ -48,25 +48,15 @@ from tensorflow.keras.optimizers import Adam
 # CONFIGURATION & LOGGING SETUP
 # ============================================================================
 
-LSTM_LOOK_BACK = int(os.getenv('LSTM_LOOK_BACK', '30'))
-LSTM_EPOCHS = int(os.getenv('LSTM_EPOCHS', '10'))
-LSTM_PATIENCE = int(os.getenv('LSTM_PATIENCE', '3'))
-LSTM_BATCH_SIZE = int(os.getenv('LSTM_BATCH_SIZE', '32'))
-LSTM_LEARNING_RATE = float(os.getenv('LSTM_LEARNING_RATE', '0.001'))
-LSTM_DROPOUT_RATE = float(os.getenv('LSTM_DROPOUT_RATE', '0.2'))
-LSTM_UNITS = int(os.getenv('LSTM_UNITS', '64'))
+from config import (
+    LSTM_LOOK_BACK, LSTM_EPOCHS, LSTM_PATIENCE, LSTM_BATCH_SIZE,
+    LSTM_LEARNING_RATE, LSTM_DROPOUT_RATE, LSTM_UNITS,
+    XGBOOST_N_ESTIMATORS, XGBOOST_MAX_DEPTH, XGBOOST_LEARNING_RATE,
+    XGBOOST_SUBSAMPLE, XGBOOST_COLSAMPLE_BYTREE, XGBOOST_RANDOM_STATE,
+    XGBOOST_VERBOSITY, OUTPUT_ROOT
+)
 
-XGBOOST_N_ESTIMATORS = int(os.getenv('XGBOOST_N_ESTIMATORS', '100'))
-XGBOOST_MAX_DEPTH = int(os.getenv('XGBOOST_MAX_DEPTH', '6'))
-XGBOOST_LEARNING_RATE = float(os.getenv('XGBOOST_LEARNING_RATE', '0.1'))
-XGBOOST_SUBSAMPLE = float(os.getenv('XGBOOST_SUBSAMPLE', '0.8'))
-XGBOOST_COLSAMPLE_BYTREE = float(os.getenv('XGBOOST_COLSAMPLE_BYTREE', '0.8'))
-XGBOOST_RANDOM_STATE = int(os.getenv('XGBOOST_RANDOM_STATE', '42'))
-XGBOOST_VERBOSITY = int(os.getenv('XGBOOST_VERBOSITY', '0'))
-
-# Настройки вывода модели
-MODEL_VERSION = os.getenv('MODEL_VERSION', os.path.splitext(os.path.basename(__file__))[0])
-OUTPUT_ROOT = os.getenv('OUTPUT_ROOT', 'outputs')
+MODEL_VERSION = os.path.splitext(os.path.basename(__file__))[0]
 MODEL_OUTPUT_DIR = os.path.join(OUTPUT_ROOT, MODEL_VERSION)
 os.makedirs(MODEL_OUTPUT_DIR, exist_ok=True)
 
