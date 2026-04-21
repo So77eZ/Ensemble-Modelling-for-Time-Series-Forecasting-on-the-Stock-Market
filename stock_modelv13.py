@@ -132,6 +132,28 @@ def get_default_hyperparams():
     return lstm_params, xgb_params
 
 # ============================================================================
+# USD/RUB RATE
+# ============================================================================
+
+def get_usd_rub_rate() -> float:
+    """Актуальный курс USD/RUB от ЦБ РФ. Fallback = 90.0 при ошибке."""
+    try:
+        resp = requests.get(
+            'https://www.cbr.ru/scripts/XML_daily.asp',
+            timeout=5
+        )
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+        for valute in root.findall('Valute'):
+            if valute.find('CharCode').text == 'USD':
+                rate = float(valute.find('Value').text.replace(',', '.'))
+                logger.info(f"USD/RUB rate from CBR: {rate}")
+                return rate
+    except Exception as e:
+        logger.warning(f"Could not fetch USD/RUB from CBR: {e}. Using fallback 90.0")
+    return 90.0
+
+# ============================================================================
 # TINKOFF API FUNDAMENTALS
 # ============================================================================
 
@@ -259,7 +281,7 @@ class TinkoffFundamentalLoader:
             'pb_ratio': funds.get('pb_ratio', 0.0),
             'ps_ratio': 0.0,
             'price_cash_flow': 0.0,
-            'value_usd': 82.91,
+            'value_usd': get_usd_rub_rate(),
             'beta': funds.get('beta', 0.0)
         }
 
@@ -529,10 +551,13 @@ def optimize_xgboost_params(X_train, y_train, n_trials=20):
             'random_state': XGBOOST_RANDOM_STATE,
             'verbosity': XGBOOST_VERBOSITY
         }
+        split = int(len(X_train) * 0.8)
+        X_tr, X_val = X_train[:split], X_train[split:]
+        y_tr, y_val = y_train[:split], y_train[split:]
         model = xgb.XGBRegressor(**params)
-        model.fit(X_train, y_train)
-        preds = model.predict(X_train)
-        return mean_squared_error(y_train, preds)
+        model.fit(X_tr, y_tr)
+        preds = model.predict(X_val)
+        return mean_squared_error(y_val, preds)
 
     study = optuna.create_study(direction='minimize')
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
@@ -1175,190 +1200,185 @@ if __name__ == '__main__':
             logger.info("Using default hyperparameters")
 
     # Основной запуск модели
-if backtest_mode:
-    # Режим бэктеста
-    backtest_results = run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params)
-    
-    if backtest_results and backtest_results[0]:
-        results_list, forecasts, forecast_dates, confidence_intervals = backtest_results
-        print("\n" + "="*60)
-        print("BACKTEST RESULTS SUMMARY")
-        print("="*60)
-        for res in results_list:
-            print(f"\n{res['horizon']}-day forecast:")
-            if res['forecast_date'] != res['actual_date']:
-                print(f"  Target date:  {res['forecast_date'].strftime('%Y-%m-%d')} (weekend/holiday)")
-                print(f"  Actual date:  {res['actual_date'].strftime('%Y-%m-%d')} (next trading day)")
-            else:
-                print(f"  Date:         {res['forecast_date'].strftime('%Y-%m-%d')}")
-            print(f"  Forecast:     {res['forecast']:.2f} RUB")
-            print(f"  Real:         {res['real']:.2f} RUB")
-            print(f"  Error:        {res['error']:.2f} RUB ({res['error_pct']:.2f}%)")
-            print(f"  CI:           [{res['lower_ci']:.2f}, {res['upper_ci']:.2f}]")
-            print(f"  In CI:        {'✓ YES' if res['in_ci'] else '✗ NO'}")
-        
-        # Вычисляем средние метрики
-        avg_error = np.mean([r['error'] for r in results_list])
-        avg_error_pct = np.mean([r['error_pct'] for r in results_list])
-        ci_coverage = sum([r['in_ci'] for r in results_list]) / len(results_list) * 100
-        
-        print(f"\nAVERAGE METRICS:")
-        print(f"  Average Error:  {avg_error:.2f} RUB ({avg_error_pct:.2f}%)")
-        print(f"  CI Coverage:    {ci_coverage:.1f}%")
-        print(f"  Total forecasts checked: {len(results_list)}")
-        print("="*60)
-        
-        # Сохраняем результаты бэктеста
-        backtest_log_dir = os.path.join(MODEL_OUTPUT_DIR, 'backtest')
-        os.makedirs(backtest_log_dir, exist_ok=True)
-        
-        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backtest_log_file = os.path.join(
-            backtest_log_dir, 
-            f'{ticker}_backtest_{backtest_date}_{timestamp_str}.txt'
-        )
-        
-        with open(backtest_log_file, 'w', encoding='utf-8') as f:
-            f.write("="*60 + "\n")
-            f.write("BACKTEST RESULTS\n")
-            f.write("="*60 + "\n")
-            f.write(f"Ticker: {ticker}\n")
-            f.write(f"Backtest Date: {backtest_date}\n")
-            f.write(f"Run Time: {datetime.now().isoformat()}\n")
-            f.write(f"Model Version: {MODEL_VERSION}\n\n")
-            
-            f.write("HYPERPARAMETERS:\n")
-            f.write(f"LSTM: units={best_lstm_params['units']}, dropout={best_lstm_params['dropout']:.4f}, lr={best_lstm_params['lr']:.6f}\n")
-            f.write(f"XGBoost: n_est={best_xgb_params['n_estimators']}, depth={best_xgb_params['max_depth']}, lr={best_xgb_params['learning_rate']:.4f}\n\n")
-            
-            f.write("FORECAST vs REAL:\n")
+    if backtest_mode:
+        # Режим бэктеста
+        backtest_results = run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params)
+
+        if backtest_results and backtest_results[0]:
+            results_list, forecasts, forecast_dates, confidence_intervals = backtest_results
+            print("\n" + "="*60)
+            print("BACKTEST RESULTS SUMMARY")
+            print("="*60)
             for res in results_list:
-                f.write(f"\n{res['horizon']}-day forecast:\n")
+                print(f"\n{res['horizon']}-day forecast:")
                 if res['forecast_date'] != res['actual_date']:
-                    f.write(f"  Target date:  {res['forecast_date'].strftime('%Y-%m-%d')} (weekend/holiday)\n")
-                    f.write(f"  Actual date:  {res['actual_date'].strftime('%Y-%m-%d')} (next trading day)\n")
+                    print(f"  Target date:  {res['forecast_date'].strftime('%Y-%m-%d')} (weekend/holiday)")
+                    print(f"  Actual date:  {res['actual_date'].strftime('%Y-%m-%d')} (next trading day)")
                 else:
-                    f.write(f"  Date:         {res['forecast_date'].strftime('%Y-%m-%d')}\n")
-                f.write(f"  Forecast:     {res['forecast']:.2f} RUB\n")
-                f.write(f"  Real:         {res['real']:.2f} RUB\n")
-                f.write(f"  Error:        {res['error']:.2f} RUB ({res['error_pct']:.2f}%)\n")
-                f.write(f"  CI:           [{res['lower_ci']:.2f}, {res['upper_ci']:.2f}]\n")
-                f.write(f"  In CI:        {'YES' if res['in_ci'] else 'NO'}\n")
-            
-            f.write(f"\nAVERAGE METRICS:\n")
-            f.write(f"Average Error: {avg_error:.2f} RUB ({avg_error_pct:.2f}%)\n")
-            f.write(f"CI Coverage: {ci_coverage:.1f}%\n")
-            f.write(f"Total forecasts checked: {len(results_list)}\n")
-        
-        logger.info(f"[OK] Backtest results saved: {backtest_log_file}")
-    else:
-        logger.error("Backtest failed: no results generated")
-else:
-    # Обычный режим прогноза
-    result = prepare_and_train_model(
-        data, ticker, end_date, 
-        best_lstm_params, best_xgb_params,
-        backtest_mode=False
-    )
+                    print(f"  Date:         {res['forecast_date'].strftime('%Y-%m-%d')}")
+                print(f"  Forecast:     {res['forecast']:.2f} RUB")
+                print(f"  Real:         {res['real']:.2f} RUB")
+                print(f"  Error:        {res['error']:.2f} RUB ({res['error_pct']:.2f}%)")
+                print(f"  CI:           [{res['lower_ci']:.2f}, {res['upper_ci']:.2f}]")
+                print(f"  In CI:        {'✓ YES' if res['in_ci'] else '✗ NO'}")
 
-    if result[0] is not None:
-        data_res, real_prices, final_pred, forecasts, forecast_dates, confidence_intervals, \
-            rmse_val, mae_val, r2_val, scaler, close_scaler, features = result
+            avg_error = np.mean([r['error'] for r in results_list])
+            avg_error_pct = np.mean([r['error_pct'] for r in results_list])
+            ci_coverage = sum([r['in_ci'] for r in results_list]) / len(results_list) * 100
 
-        print("\n" + "="*60)
-        print("FORECAST SUMMARY")
-        print("="*60)
-        for horizon in [1, 2, 3]:
-            price = forecasts[horizon][-1]
-            date_str = forecast_dates[horizon-1].strftime('%d.%m.%Y')
-            print(f"{horizon} day: {forecast_dates[horizon-1]} ~ Цена на {date_str}: {price:.2f}")
-            if show_ci:
-                lower, upper = confidence_intervals[horizon][0][-1], confidence_intervals[horizon][1][-1]
-                print(f"  Confidence Interval: [{lower:.2f}, {upper:.2f}]")
-        print("="*60)
+            print(f"\nAVERAGE METRICS:")
+            print(f"  Average Error:  {avg_error:.2f} RUB ({avg_error_pct:.2f}%)")
+            print(f"  CI Coverage:    {ci_coverage:.1f}%")
+            print(f"  Total forecasts checked: {len(results_list)}")
+            print("="*60)
 
-        # Сохранение графиков и логов
-        graphs_dir = os.path.join(MODEL_OUTPUT_DIR, 'graphs')
-        logs_dir = os.path.join(MODEL_OUTPUT_DIR, 'logs')
-        os.makedirs(graphs_dir, exist_ok=True)
-        os.makedirs(logs_dir, exist_ok=True)
+            backtest_log_dir = os.path.join(MODEL_OUTPUT_DIR, 'backtest')
+            os.makedirs(backtest_log_dir, exist_ok=True)
 
-        plt.figure(figsize=(16, 8))
-        plt.plot(
-            data_res['Date'],
-            data_res['Close'],
-            label='Real Prices',
-            color='blue',
-            linewidth=2
-        )
-        plt.plot(
-            data_res['Date'].iloc[-len(final_pred):],
-            final_pred,
-            label='Predicted (test)',
-            color='green',
-            linestyle='--',
-            linewidth=2
-        )
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backtest_log_file = os.path.join(
+                backtest_log_dir,
+                f'{ticker}_backtest_{backtest_date}_{timestamp_str}.txt'
+            )
 
-        cum_forecast_dates = forecast_dates[:3]
-        cum_forecast_prices = [forecasts[h][-1] for h in [1, 2, 3]]
-        plt.plot(cum_forecast_dates, cum_forecast_prices, label='Forecast (1-3 days)', 
-                linestyle='-.', linewidth=2, marker='o', color='red')
+            with open(backtest_log_file, 'w', encoding='utf-8') as f:
+                f.write("="*60 + "\n")
+                f.write("BACKTEST RESULTS\n")
+                f.write("="*60 + "\n")
+                f.write(f"Ticker: {ticker}\n")
+                f.write(f"Backtest Date: {backtest_date}\n")
+                f.write(f"Run Time: {datetime.now().isoformat()}\n")
+                f.write(f"Model Version: {MODEL_VERSION}\n\n")
+                f.write("HYPERPARAMETERS:\n")
+                f.write(f"LSTM: units={best_lstm_params['units']}, dropout={best_lstm_params['dropout']:.4f}, lr={best_lstm_params['lr']:.6f}\n")
+                f.write(f"XGBoost: n_est={best_xgb_params['n_estimators']}, depth={best_xgb_params['max_depth']}, lr={best_xgb_params['learning_rate']:.4f}\n\n")
+                f.write("FORECAST vs REAL:\n")
+                for res in results_list:
+                    f.write(f"\n{res['horizon']}-day forecast:\n")
+                    if res['forecast_date'] != res['actual_date']:
+                        f.write(f"  Target date:  {res['forecast_date'].strftime('%Y-%m-%d')} (weekend/holiday)\n")
+                        f.write(f"  Actual date:  {res['actual_date'].strftime('%Y-%m-%d')} (next trading day)\n")
+                    else:
+                        f.write(f"  Date:         {res['forecast_date'].strftime('%Y-%m-%d')}\n")
+                    f.write(f"  Forecast:     {res['forecast']:.2f} RUB\n")
+                    f.write(f"  Real:         {res['real']:.2f} RUB\n")
+                    f.write(f"  Error:        {res['error']:.2f} RUB ({res['error_pct']:.2f}%)\n")
+                    f.write(f"  CI:           [{res['lower_ci']:.2f}, {res['upper_ci']:.2f}]\n")
+                    f.write(f"  In CI:        {'YES' if res['in_ci'] else 'NO'}\n")
+                f.write(f"\nAVERAGE METRICS:\n")
+                f.write(f"Average Error: {avg_error:.2f} RUB ({avg_error_pct:.2f}%)\n")
+                f.write(f"CI Coverage: {ci_coverage:.1f}%\n")
+                f.write(f"Total forecasts checked: {len(results_list)}\n")
 
-        if show_ci:
-            cum_lower = [confidence_intervals[h][0][-1] for h in [1, 2, 3]]
-            cum_upper = [confidence_intervals[h][1][-1] for h in [1, 2, 3]]
-            plt.fill_between(cum_forecast_dates, cum_lower, cum_upper, alpha=0.2, label='CI (1-3 days)')
-
-        plt.title(
-            f'Stock Price Forecast for {ticker} (v13)',
-            fontsize=14,
-            fontweight='bold'
-        )
-        plt.xlabel('Date', fontsize=12)
-        plt.ylabel('Price (RUB)', fontsize=12)
-        plt.legend(fontsize=10)
-        plt.grid(True, alpha=0.3)
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-
-        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        graph_filename = f'{ticker}_price_forecast_v13_{timestamp_str}.jpg'
-        graph_path = os.path.join(graphs_dir, graph_filename)
-        plt.savefig(graph_path, dpi=300, bbox_inches='tight')
-        logger.info(f"[OK] Graph saved: {graph_path}")
-
-        if show_plot:
-            plt.show()
+            logger.info(f"[OK] Backtest results saved: {backtest_log_file}")
         else:
-            plt.close()
+            logger.error("Backtest failed: no results generated")
 
-        log_filename = f'{ticker}_forecast_v13_{timestamp_str}.txt'
-        log_path = os.path.join(logs_dir, log_filename)
-        with open(log_path, 'w', encoding='utf-8') as f:
-            f.write(f"{'=' * 60}\n")
-            f.write('MODELING STOCK PRICE FORECAST: stock_modelv13_fixed\n')
-            f.write(f"{'=' * 60}\n")
-            f.write(f'Ticker: {ticker}\n')
-            f.write(f'Run time: {datetime.now().isoformat()}\n')
-            f.write(f'Model version: {MODEL_VERSION}\n')
-            f.write(f'LSTM Params: units={best_lstm_params["units"]}, dropout={best_lstm_params["dropout"]:.4f}, lr={best_lstm_params["lr"]:.6f}\n')
-            f.write(f'XGBoost Params: n_estimators={best_xgb_params["n_estimators"]}, max_depth={best_xgb_params["max_depth"]}, lr={best_xgb_params["learning_rate"]:.4f}\n')
-            f.write('\nQUALITY METRICS (Avg over splits):\n')
-            f.write(f' RMSE: {rmse_val:.4f}\n')
-            f.write(f' MAE: {mae_val:.4f}\n')
-            f.write(f' R²: {r2_val:.4f}\n')
-            f.write('\nFORECASTS:\n')
+    else:
+        # Обычный режим прогноза
+        result = prepare_and_train_model(
+            data, ticker, end_date,
+            best_lstm_params, best_xgb_params,
+            backtest_mode=False
+        )
+
+        if result[0] is not None:
+            data_res, real_prices, final_pred, forecasts, forecast_dates, confidence_intervals, \
+                rmse_val, mae_val, r2_val, scaler, close_scaler, features = result
+
+            print("\n" + "="*60)
+            print("FORECAST SUMMARY")
+            print("="*60)
             for horizon in [1, 2, 3]:
-                prices = forecasts[horizon]
-                lower, upper = confidence_intervals[horizon]
-                f.write(f'{horizon} days ahead:\n')
-                for day_idx, (price, low, up) in enumerate(zip(prices, lower, upper), 1):
-                    f.write(f'  Day {day_idx}: Price={price:.2f}, CI=[{low:.2f}, {up:.2f}]\n')
+                price = forecasts[horizon][-1]
+                date_str = forecast_dates[horizon-1].strftime('%d.%m.%Y')
+                print(f"{horizon} day: {forecast_dates[horizon-1]} ~ Цена на {date_str}: {price:.2f}")
+                if show_ci:
+                    lower, upper = confidence_intervals[horizon][0][-1], confidence_intervals[horizon][1][-1]
+                    print(f"  Confidence Interval: [{lower:.2f}, {upper:.2f}]")
+            print("="*60)
 
-        logger.info(f"[OK] Log saved: {log_path}")
+            graphs_dir = os.path.join(MODEL_OUTPUT_DIR, 'graphs')
+            logs_dir = os.path.join(MODEL_OUTPUT_DIR, 'logs')
+            os.makedirs(graphs_dir, exist_ok=True)
+            os.makedirs(logs_dir, exist_ok=True)
 
-    logger.info("\n" + "=" * 60)
-    logger.info("MODELING COMPLETED")
-    logger.info("=" * 60)
-    logger.info(f"Results saved in: {MODEL_OUTPUT_DIR}")
+            plt.figure(figsize=(16, 8))
+            plt.plot(
+                data_res['Date'],
+                data_res['Close'],
+                label='Real Prices',
+                color='blue',
+                linewidth=2
+            )
+            plt.plot(
+                data_res['Date'].iloc[-len(final_pred):],
+                final_pred,
+                label='Predicted (test)',
+                color='green',
+                linestyle='--',
+                linewidth=2
+            )
+
+            cum_forecast_dates = forecast_dates[:3]
+            cum_forecast_prices = [forecasts[h][-1] for h in [1, 2, 3]]
+            plt.plot(cum_forecast_dates, cum_forecast_prices, label='Forecast (1-3 days)',
+                     linestyle='-.', linewidth=2, marker='o', color='red')
+
+            if show_ci:
+                cum_lower = [confidence_intervals[h][0][-1] for h in [1, 2, 3]]
+                cum_upper = [confidence_intervals[h][1][-1] for h in [1, 2, 3]]
+                plt.fill_between(cum_forecast_dates, cum_lower, cum_upper, alpha=0.2, label='CI (1-3 days)')
+
+            plt.title(
+                f'Stock Price Forecast for {ticker} (v13)',
+                fontsize=14,
+                fontweight='bold'
+            )
+            plt.xlabel('Date', fontsize=12)
+            plt.ylabel('Price (RUB)', fontsize=12)
+            plt.legend(fontsize=10)
+            plt.grid(True, alpha=0.3)
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            graph_filename = f'{ticker}_price_forecast_v13_{timestamp_str}.jpg'
+            graph_path = os.path.join(graphs_dir, graph_filename)
+            plt.savefig(graph_path, dpi=300, bbox_inches='tight')
+            logger.info(f"[OK] Graph saved: {graph_path}")
+
+            if show_plot:
+                plt.show()
+            else:
+                plt.close()
+
+            log_filename = f'{ticker}_forecast_v13_{timestamp_str}.txt'
+            log_path = os.path.join(logs_dir, log_filename)
+            with open(log_path, 'w', encoding='utf-8') as f:
+                f.write(f"{'=' * 60}\n")
+                f.write('MODELING STOCK PRICE FORECAST: stock_modelv13\n')
+                f.write(f"{'=' * 60}\n")
+                f.write(f'Ticker: {ticker}\n')
+                f.write(f'Run time: {datetime.now().isoformat()}\n')
+                f.write(f'Model version: {MODEL_VERSION}\n')
+                f.write(f'LSTM Params: units={best_lstm_params["units"]}, dropout={best_lstm_params["dropout"]:.4f}, lr={best_lstm_params["lr"]:.6f}\n')
+                f.write(f'XGBoost Params: n_estimators={best_xgb_params["n_estimators"]}, max_depth={best_xgb_params["max_depth"]}, lr={best_xgb_params["learning_rate"]:.4f}\n')
+                f.write('\nQUALITY METRICS (Avg over splits):\n')
+                f.write(f' RMSE: {rmse_val:.4f}\n')
+                f.write(f' MAE: {mae_val:.4f}\n')
+                f.write(f' R²: {r2_val:.4f}\n')
+                f.write('\nFORECASTS:\n')
+                for horizon in [1, 2, 3]:
+                    prices = forecasts[horizon]
+                    lower, upper = confidence_intervals[horizon]
+                    f.write(f'{horizon} days ahead:\n')
+                    for day_idx, (price, low, up) in enumerate(zip(prices, lower, upper), 1):
+                        f.write(f'  Day {day_idx}: Price={price:.2f}, CI=[{low:.2f}, {up:.2f}]\n')
+
+            logger.info(f"[OK] Log saved: {log_path}")
+
+        logger.info("\n" + "=" * 60)
+        logger.info("MODELING COMPLETED")
+        logger.info("=" * 60)
+        logger.info(f"Results saved in: {MODEL_OUTPUT_DIR}")
