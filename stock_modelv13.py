@@ -135,6 +135,16 @@ def get_default_hyperparams():
 # USD/RUB RATE
 # ============================================================================
 
+def next_business_day(date: datetime, n: int) -> datetime:
+    """Сдвиг на n рабочих дней (пропускает субботу и воскресенье)."""
+    current = date
+    added = 0
+    while added < n:
+        current += timedelta(days=1)
+        if current.weekday() < 5:
+            added += 1
+    return current
+
 def get_usd_rub_rate() -> float:
     """Актуальный курс USD/RUB от ЦБ РФ. Fallback = 90.0 при ошибке."""
     try:
@@ -593,10 +603,13 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         'BB_Middle', 'BB_Upper', 'BB_Lower', 'BB_Width',
         'ATR_14', 'Stoch_K', 'Stoch_D', 'ADX_14', 'Momentum_10',
         'Price_Change_1', 'Price_Change_5',
-        'market_cap', 'roa', 'roe', 'debt_equity', 'current_ratio',
-        'gross_profit_margin', 'dividend_yield', 'eps_growth', 'sales_growth',
-        'operating_margin', 'net_profit_margin', 'pe_ratio', 'pb_ratio',
-        'ps_ratio', 'price_cash_flow', 'value_usd', 'beta'
+        # --- Фундаментальные (активные, загружаются из Tinkoff Invest API) ---
+        'market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'value_usd', 'beta',
+        # --- Фундаментальные (отключены: нет источника данных, значения = 0) ---
+        # TODO: подключить financemarker.ru API для заполнения этих признаков
+        # 'roa', 'debt_equity', 'current_ratio', 'gross_profit_margin',
+        # 'eps_growth', 'sales_growth', 'operating_margin', 'net_profit_margin',
+        # 'ps_ratio', 'price_cash_flow',
     ]
     data = data[['Date'] + features].dropna()
     
@@ -821,7 +834,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
                 volatility = pred_close * 0.01
             
             new_data = {
-                'Date': base_date + timedelta(days=day + 1),
+                'Date': next_business_day(base_date, day + 1),
                 'Open': float(prev_close),
                 'High': float(max(prev_close, pred_close) + volatility * 0.3),
                 'Low': float(min(prev_close, pred_close) - volatility * 0.3),
@@ -850,7 +863,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         forecasts[horizon] = forecast_prices
         confidence_intervals[horizon] = (lower_bounds, upper_bounds)
 
-    forecast_dates = [base_date + timedelta(days=i + 1) for i in range(max(forecast_horizons))]
+    forecast_dates = [next_business_day(base_date, i + 1) for i in range(max(forecast_horizons))]
 
     logger.info("Forecast logic check: No forward-looking indicators used; updates are sequential.")
 
@@ -1158,10 +1171,13 @@ if __name__ == '__main__':
             'BB_Middle', 'BB_Upper', 'BB_Lower', 'BB_Width',
             'ATR_14', 'Stoch_K', 'Stoch_D', 'ADX_14', 'Momentum_10',
             'Price_Change_1', 'Price_Change_5',
-            'market_cap', 'roa', 'roe', 'debt_equity', 'current_ratio',
-            'gross_profit_margin', 'dividend_yield', 'eps_growth', 'sales_growth',
-            'operating_margin', 'net_profit_margin', 'pe_ratio', 'pb_ratio',
-            'ps_ratio', 'price_cash_flow', 'value_usd', 'beta'
+            # --- Фундаментальные (активные, загружаются из Tinkoff Invest API) ---
+            'market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'value_usd', 'beta',
+            # --- Фундаментальные (отключены: нет источника данных, значения = 0) ---
+            # TODO: подключить financemarker.ru API для заполнения этих признаков
+            # 'roa', 'debt_equity', 'current_ratio', 'gross_profit_margin',
+            # 'eps_growth', 'sales_growth', 'operating_margin', 'net_profit_margin',
+            # 'ps_ratio', 'price_cash_flow',
         ]
         
         # В режиме бэктеста оптимизируем только на данных до backtest_date
