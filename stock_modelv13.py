@@ -434,6 +434,12 @@ def update_technical_indicators(data):
     data['Momentum_10'] = calculate_momentum(data, 10)
     data['Price_Change_1'] = calculate_price_change(data, 1)
     data['Price_Change_5'] = calculate_price_change(data, 5)
+    returns = data['Close'].pct_change()
+    data['Vol_Return_5'] = returns.rolling(5).std()
+    data['Vol_Return_10'] = returns.rolling(10).std()
+    data['Vol_Return_20'] = returns.rolling(20).std()
+    data['Return_MA_5'] = returns.rolling(5).mean()
+    data['Return_MA_10'] = returns.rolling(10).mean()
     return data
 
 def update_technical_indicators_single_row(data, idx):
@@ -499,8 +505,23 @@ def update_technical_indicators_single_row(data, idx):
         pc5_val = calculate_price_change(window_data, 5).iloc[-1]
         data.at[idx, 'Price_Change_5'] = pc5_val if not pd.isna(pc5_val) else 0.0
 
+    if idx >= 5:
+        returns_5 = data['Close'].iloc[max(0, idx-5):idx+1].pct_change()
+        data.at[idx, 'Vol_Return_5'] = returns_5.std() if not pd.isna(returns_5.std()) else 0.0
+        data.at[idx, 'Return_MA_5'] = returns_5.mean() if not pd.isna(returns_5.mean()) else 0.0
+
+    if idx >= 10:
+        returns_10 = data['Close'].iloc[max(0, idx-10):idx+1].pct_change()
+        data.at[idx, 'Vol_Return_10'] = returns_10.std() if not pd.isna(returns_10.std()) else 0.0
+        data.at[idx, 'Return_MA_10'] = returns_10.mean() if not pd.isna(returns_10.mean()) else 0.0
+
+    if idx >= 20:
+        returns_20 = data['Close'].iloc[max(0, idx-20):idx+1].pct_change()
+        data.at[idx, 'Vol_Return_20'] = returns_20.std() if not pd.isna(returns_20.std()) else 0.0
+
     for col in ['ATR_14', 'Stoch_K', 'Stoch_D', 'ADX_14', 'Momentum_10', 'Price_Change_1', 'Price_Change_5',
-                'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Histogram', 'BB_Middle', 'BB_Upper', 'BB_Lower', 'BB_Width']:
+                'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Histogram', 'BB_Middle', 'BB_Upper', 'BB_Lower', 'BB_Width',
+                'Vol_Return_5', 'Vol_Return_10', 'Vol_Return_20', 'Return_MA_5', 'Return_MA_10']:
         if col in data.columns and pd.isna(data.at[idx, col]):
             if col in ['Stoch_K', 'Stoch_D', 'RSI_14']:
                 data.at[idx, col] = 50.0
@@ -600,6 +621,9 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         'BB_Middle', 'BB_Upper', 'BB_Lower', 'BB_Width',
         'ATR_14', 'Stoch_K', 'Stoch_D', 'ADX_14', 'Momentum_10',
         'Price_Change_1', 'Price_Change_5',
+        # --- Скользящая волатильность и momentum доходностей ---
+        'Vol_Return_5', 'Vol_Return_10', 'Vol_Return_20',
+        'Return_MA_5', 'Return_MA_10',
         # --- Фундаментальные (активные, загружаются из Tinkoff Invest API) ---
         'market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'value_usd', 'beta',
         # --- Фундаментальные (отключены: нет источника данных, значения = 0) ---
