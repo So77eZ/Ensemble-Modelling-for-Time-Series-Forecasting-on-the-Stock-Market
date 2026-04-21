@@ -6,6 +6,22 @@
 
 ---
 
+## [v13.5] — 2026-04-22 02:30
+
+### Исправлено
+
+- `stock_modelv13.py` — `verify=False` заменён на `verify=certifi.where()` в обоих вызовах Tinkoff Invest API; добавлен `import certifi`; устранена MITM-уязвимость и `InsecureRequestWarning`
+
+### Добавлено
+
+- `requirements.txt` — зафиксированы 11 прямых зависимостей с точными версиями: `tensorflow`, `xgboost`, `optuna`, `pandas`, `numpy`, `scikit-learn`, `matplotlib`, `requests`, `certifi`, `moexalgo`, `python-dotenv`
+
+### Причина
+
+SSL-верификация была отключена для всех HTTPS-соединений с Tinkoff API, что делало их уязвимыми к перехвату. `certifi` уже присутствует в окружении как транзитивная зависимость `requests`. `requirements.txt` закрывает пункт воспроизводимости окружения.
+
+---
+
 ## [v13.4] — 2026-04-22 01:46
 
 ### Исправлено
