@@ -24,11 +24,7 @@ import requests
 import xml.etree.ElementTree as ET
 
 import tensorflow as tf
-from scipy.interpolate import interp1d
-
-import io
 import logging
-from pathlib import Path
 
 import optuna
 
@@ -41,7 +37,7 @@ except ImportError:
 
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
-from tensorflow.keras.callbacks import EarlyStopping, TensorBoard, ModelCheckpoint
+from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.optimizers import Adam
 
 # ============================================================================
