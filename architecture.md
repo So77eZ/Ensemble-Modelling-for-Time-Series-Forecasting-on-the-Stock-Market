@@ -11,8 +11,7 @@
 ### 1. Активация виртуального окружения (PowerShell)
 
 ```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
-& "s:\ISUCT\for diplom Dev\forMasterCourse++\venv312\Scripts\Activate.ps1"
+(Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned) ; (& "s:\ISUCT\for diplom Dev\forMasterCourse++\venv312\Scripts\Activate.ps1")
 ```
 
 ### 2. Запуск скрипта
