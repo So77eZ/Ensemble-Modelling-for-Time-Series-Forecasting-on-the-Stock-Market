@@ -1,0 +1,12 @@
+{
+    "python.defaultInterpreterPath": "s:\\ISUCT\\for diplom Dev\\forMasterCourse++\\venv312\\Scripts\\python.exe",
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportMissingModuleSource": "none",
+        "reportAttributeAccessIssue": "none",
+        "reportOperatorIssue": "none"
+    },
+    "python.analysis.ignore": [
+        "**/tensorflow/**",
+        "**/keras/**"
+    ]
+}

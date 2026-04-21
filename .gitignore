@@ -21,7 +21,8 @@ env/
 .ipynb_checkpoints/
 
 # IDE
-.vscode/
+.vscode/*
+!.vscode/settings.json
 .idea/
 
 # OS
