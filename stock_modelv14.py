@@ -613,6 +613,12 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         data[key] = value
 
     data = data.infer_objects(copy=False).fillna(0)
+
+    # Гарантируем наличие фундаментальных колонок (если Tinkoff API недоступен)
+    for col in ['market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'value_usd', 'beta']:
+        if col not in data.columns:
+            data[col] = 0.0
+
     logger.info(f"Data shape after cleaning: {data.shape}")
 
     features = [
@@ -1023,7 +1029,7 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params)
 def get_user_inputs():
     """Собираем все параметры от пользователя в начале программы"""
     print("\n" + "="*60)
-    print("STOCK PRICE FORECASTING MODEL v13")
+    print("STOCK PRICE FORECASTING MODEL v14")
     print("="*60)
     
     # 1. Тикер
@@ -1368,7 +1374,7 @@ if __name__ == '__main__':
                 plt.fill_between(cum_forecast_dates, cum_lower, cum_upper, alpha=0.2, label='CI (1-3 days)')
 
             plt.title(
-                f'Stock Price Forecast for {ticker} (v13)',
+                f'Stock Price Forecast for {ticker} (v14)',
                 fontsize=14,
                 fontweight='bold'
             )
@@ -1380,7 +1386,7 @@ if __name__ == '__main__':
             plt.tight_layout()
 
             timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            graph_filename = f'{ticker}_price_forecast_v13_{timestamp_str}.jpg'
+            graph_filename = f'{ticker}_price_forecast_v14_{timestamp_str}.jpg'
             graph_path = os.path.join(graphs_dir, graph_filename)
             plt.savefig(graph_path, dpi=300, bbox_inches='tight')
             logger.info(f"[OK] Graph saved: {graph_path}")
@@ -1390,11 +1396,11 @@ if __name__ == '__main__':
             else:
                 plt.close()
 
-            log_filename = f'{ticker}_forecast_v13_{timestamp_str}.txt'
+            log_filename = f'{ticker}_forecast_v14_{timestamp_str}.txt'
             log_path = os.path.join(logs_dir, log_filename)
             with open(log_path, 'w', encoding='utf-8') as f:
                 f.write(f"{'=' * 60}\n")
-                f.write('MODELING STOCK PRICE FORECAST: stock_modelv13\n')
+                f.write('MODELING STOCK PRICE FORECAST: stock_modelv14\n')
                 f.write(f"{'=' * 60}\n")
                 f.write(f'Ticker: {ticker}\n')
                 f.write(f'Run time: {datetime.now().isoformat()}\n')

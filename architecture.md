@@ -1,4 +1,4 @@
-# Архитектура проекта: Stock Price Forecasting Model v13
+# Архитектура проекта: Stock Price Forecasting Model v14
 
 ## Обзор
 
@@ -18,12 +18,12 @@
 
 ```bash
 # Интерактивный режим (рекомендуется)
-python .\stock_modelv13.py
+python .\stock_modelv14.py
 
 # CLI-режим (headless, все параметры через аргументы)
-python .\stock_modelv13.py --ticker SBER --no-gui
-python .\stock_modelv13.py --ticker LKOH --backtest 2025-03-01
-python .\stock_modelv13.py --ticker GAZP --optimize --trials 30 --no-gui
+python .\stock_modelv14.py --ticker SBER --no-gui
+python .\stock_modelv14.py --ticker LKOH --backtest 2025-03-01
+python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
 ```
 
 ### Аргументы CLI
