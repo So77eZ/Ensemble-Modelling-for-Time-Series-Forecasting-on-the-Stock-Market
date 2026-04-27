@@ -1,5 +1,10 @@
+import sys
+import os
 import numpy as np
 import pandas as pd
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from stock_modelv14 import merge_horizon_results, _forecast_dates_for_horizon
 
 
 def _build_sequences(close_vals, look_back, horizon):
@@ -62,3 +67,56 @@ def test_merge_forecasts_from_three_calls():
     assert forecasts[1][-1] == 100.0
     assert confidence_intervals[2][0][-1] == 180.0
     assert confidence_intervals[3][1][-1] == 330.0
+
+
+# ---- тесты для merge_horizon_results ----
+
+def _mock_result(h):
+    forecasts = {h: [float(h * 100)]}
+    ci = {h: ([float(h * 90)], [float(h * 110)])}
+    return (object(), None, None, forecasts, [], ci, 0.0, 0.0, 0.0, None, None, None)
+
+
+def test_merge_partial_none_returns_none():
+    """Если горизонт h=2 вернул None, merge_horizon_results должен вернуть None."""
+    all_results = {1: _mock_result(1), 2: None, 3: _mock_result(3)}
+    assert merge_horizon_results(all_results) is None
+
+
+def test_merge_data_none_returns_none():
+    """Если data (индекс 0) в одном результате — None, должен вернуть None."""
+    def failed_result():
+        return (None, None, None, {}, [], {}, 0.0, 0.0, 0.0, None, None, None)
+
+    all_results = {1: _mock_result(1), 2: failed_result(), 3: _mock_result(3)}
+    assert merge_horizon_results(all_results) is None
+
+
+def test_merge_all_ok_returns_dicts():
+    """При успешных всех горизонтах возвращает (forecasts, ci) с ключами 1,2,3."""
+    all_results = {h: _mock_result(h) for h in [1, 2, 3]}
+    result = merge_horizon_results(all_results)
+    assert result is not None
+    forecasts, ci = result
+    assert forecasts[1] == [100.0]
+    assert forecasts[2] == [200.0]
+    assert forecasts[3] == [300.0]
+    assert ci[1] == ([90.0], [110.0])
+
+
+# ---- тесты для _forecast_dates_for_horizon ----
+
+def test_forecast_dates_horizon1_returns_one_date():
+    """_forecast_dates_for_horizon(base, 1) должен вернуть ровно 1 дату."""
+    from datetime import datetime
+    base = datetime(2025, 1, 2)
+    dates = _forecast_dates_for_horizon(base, 1)
+    assert len(dates) == 1
+
+
+def test_forecast_dates_horizon3_returns_three_dates():
+    """_forecast_dates_for_horizon(base, 3) должен вернуть ровно 3 даты."""
+    from datetime import datetime
+    base = datetime(2025, 1, 2)
+    dates = _forecast_dates_for_horizon(base, 3)
+    assert len(dates) == 3

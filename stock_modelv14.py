@@ -142,6 +142,23 @@ def next_business_day(date: datetime, n: int) -> datetime:
             added += 1
     return current
 
+def _forecast_dates_for_horizon(base_date: datetime, horizon: int) -> list:
+    """Возвращает список из horizon рабочих дней начиная с base_date+1."""
+    return [next_business_day(base_date, i + 1) for i in range(horizon)]
+
+
+def merge_horizon_results(all_results: dict):
+    """
+    Принимает {h: result_tuple} от трёх вызовов prepare_and_train_model.
+    Возвращает (forecasts, confidence_intervals) или None при любом сбое.
+    """
+    if any(r is None or r[0] is None for r in all_results.values()):
+        return None
+    forecasts = {h: all_results[h][3][h] for h in all_results}
+    confidence_intervals = {h: all_results[h][5][h] for h in all_results}
+    return forecasts, confidence_intervals
+
+
 def get_usd_rub_rate() -> float:
     """Актуальный курс USD/RUB от ЦБ РФ. Fallback = 90.0 при ошибке."""
     try:
@@ -838,7 +855,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     forecasts[horizon] = [pred_close]
     confidence_intervals[horizon] = ([lower], [upper])
 
-    forecast_dates = [next_business_day(base_date, i + 1) for i in range(3)]
+    forecast_dates = _forecast_dates_for_horizon(base_date, horizon)
 
     logger.info(
         f"Horizon {horizon}: Forecast={pred_close:.2f}, "
@@ -896,15 +913,18 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params)
             horizon=h
         )
 
-    if all_results[1][0] is None:
+    merged = merge_horizon_results(all_results)
+    if merged is None:
         return None
 
-    data_train, real_prices, final_pred, _, forecast_dates, _, \
-        rmse_val, mae_val, r2_val, scaler, close_scaler, features = all_results[1]
+    forecasts, confidence_intervals = merged
 
-    forecasts = {h: all_results[h][3][h] for h in [1, 2, 3]}
-    confidence_intervals = {h: all_results[h][5][h] for h in [1, 2, 3]}
-    
+    data_train, real_prices, final_pred, _, _, _, \
+        rmse_val, mae_val, r2_val, scaler, close_scaler, features = all_results[1]
+    forecast_dates = _forecast_dates_for_horizon(
+        datetime.strptime(backtest_date, '%Y-%m-%d'), 3
+    )
+
     # Сравниваем прогнозы с реальными данными
     backtest_results = []
     
@@ -1285,12 +1305,15 @@ if __name__ == '__main__':
                 horizon=h
             )
 
-        if all_results[1][0] is not None:
-            data_res, real_prices, final_pred, _, forecast_dates, _, \
-                rmse_val, mae_val, r2_val, scaler, close_scaler, features = all_results[1]
+        merged = merge_horizon_results(all_results)
+        if merged is not None:
+            forecasts, confidence_intervals = merged
 
-            forecasts = {h: all_results[h][3][h] for h in [1, 2, 3]}
-            confidence_intervals = {h: all_results[h][5][h] for h in [1, 2, 3]}
+            data_res, real_prices, final_pred, _, _, _, \
+                rmse_val, mae_val, r2_val, scaler, close_scaler, features = all_results[1]
+            forecast_dates = _forecast_dates_for_horizon(
+                datetime.strptime(end_date, '%Y-%m-%d'), 3
+            )
 
             print("\n" + "="*60)
             print("FORECAST SUMMARY")
