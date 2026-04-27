@@ -64,7 +64,7 @@ python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
 | `TINVEST_TOKEN` / `INVEST_TOKEN` | Токен T-Bank Invest API (фундаментальные данные)         |
 | `TINVEST_SANDBOX_TOKEN`          | Sandbox-токен T-Bank (используется так же, как основной) |
 | `MOEXALGO_TOKEN`                 | JWT-токен для библиотеки `moexalgo`                      |
-| `FINANCEMARKER_TOKEN`            | Не используется в v13 (legacy)                           |
+| `FINANCEMARKER_TOKEN`            | Не используется в v14 (legacy)                           |
 
 ### Гиперпараметры LSTM
 
@@ -223,9 +223,9 @@ python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
 │  outputs/{MODEL_VERSION}/                                       │
 │  ├── logs/                                                      │
 │  │   ├── training_detailed_{timestamp}.log  (основной лог)      │
-│  │   └── {TICKER}_forecast_v13_{timestamp}.txt  (результаты)    │
+│  │   └── {TICKER}_forecast_v14_{timestamp}.txt  (результаты)    │
 │  ├── graphs/                                                    │
-│  │   └── {TICKER}_price_forecast_v13_{timestamp}.jpg            │
+│  │   └── {TICKER}_price_forecast_v14_{timestamp}.jpg            │
 │  ├── hyperparams/                                               │
 │  │   └── {TICKER}_hyperparams.json                              │
 │  └── backtest/                                                  │
