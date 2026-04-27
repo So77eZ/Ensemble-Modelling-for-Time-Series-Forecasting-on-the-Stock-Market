@@ -595,7 +595,7 @@ def optimize_xgboost_params(X_train, y_train, n_trials=20):
 # MODEL TRAINING
 # ============================================================================
 
-def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_params, backtest_mode=False, backtest_date=None):
+def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_params, backtest_mode=False, backtest_date=None, horizon: int = 1):
     logger.info("=" * 60)
     logger.info(f"PREPARING DATA FOR {ticker}")
     if backtest_mode:
@@ -656,11 +656,11 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     close_scaler = MinMaxScaler()
     close_scaler.fit(data[['Close']])
 
-    logger.info(f"Preparing sequences with look_back={LSTM_LOOK_BACK}...")
+    logger.info(f"Preparing sequences with look_back={LSTM_LOOK_BACK}, horizon={horizon}...")
     X, y = [], []
-    for i in range(LSTM_LOOK_BACK, len(scaled_df)):
+    for i in range(LSTM_LOOK_BACK, len(scaled_df) - horizon):
         X.append(scaled_df.iloc[i-LSTM_LOOK_BACK:i].values)
-        y.append(scaled_df['Close'].iloc[i])
+        y.append(scaled_df['Close'].iloc[i + horizon])
     X, y = np.array(X), np.array(y)
     logger.info(f"Total sequences: {len(X)}")
 
