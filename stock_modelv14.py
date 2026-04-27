@@ -1270,15 +1270,21 @@ if __name__ == '__main__':
 
     else:
         # Обычный режим прогноза
-        result = prepare_and_train_model(
-            data, ticker, end_date,
-            best_lstm_params, best_xgb_params,
-            backtest_mode=False
-        )
+        all_results = {}
+        for h in [1, 2, 3]:
+            all_results[h] = prepare_and_train_model(
+                data, ticker, end_date,
+                best_lstm_params, best_xgb_params,
+                backtest_mode=False,
+                horizon=h
+            )
 
-        if result[0] is not None:
-            data_res, real_prices, final_pred, forecasts, forecast_dates, confidence_intervals, \
-                rmse_val, mae_val, r2_val, scaler, close_scaler, features = result
+        if all_results[1][0] is not None:
+            data_res, real_prices, final_pred, _, forecast_dates, _, \
+                rmse_val, mae_val, r2_val, scaler, close_scaler, features = all_results[1]
+
+            forecasts = {h: all_results[h][3][h] for h in [1, 2, 3]}
+            confidence_intervals = {h: all_results[h][5][h] for h in [1, 2, 3]}
 
             print("\n" + "="*60)
             print("FORECAST SUMMARY")
