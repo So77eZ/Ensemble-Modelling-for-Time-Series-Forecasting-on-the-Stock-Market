@@ -21,8 +21,10 @@ import argparse
 from datetime import datetime, timedelta
 
 import requests
-import certifi
+import urllib3
 import xml.etree.ElementTree as ET
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 import tensorflow as tf
 import logging
@@ -159,6 +161,19 @@ def merge_horizon_results(all_results: dict):
     return forecasts, confidence_intervals
 
 
+def _get_ci_params(ci_mode: str, X_train: np.ndarray, y_train: np.ndarray):
+    """
+    Возвращает (X_q, y_q, lower_alpha, upper_alpha) для обучения квантильных моделей.
+    narrow: последние 756 строк (~3 торговых года), перцентили 25/75.
+    wide:   полная история, перцентили 5/95.
+    """
+    NARROW_WINDOW = 756
+    if ci_mode == 'narrow':
+        q_start = max(0, len(X_train) - NARROW_WINDOW)
+        return X_train[q_start:], y_train[q_start:], 0.25, 0.75
+    return X_train, y_train, 0.05, 0.95
+
+
 def get_usd_rub_rate() -> float:
     """Актуальный курс USD/RUB от ЦБ РФ. Fallback = 90.0 при ошибке."""
     try:
@@ -213,7 +228,7 @@ class TinkoffFundamentalLoader:
                 json=payload,
                 headers=self.headers,
                 timeout=10,
-                verify=certifi.where()
+                verify=False
             )
             if resp.status_code != 200:
                 logger.error(f"API Error (Shares): {resp.status_code} {resp.text}")
@@ -246,7 +261,7 @@ class TinkoffFundamentalLoader:
                 json=payload,
                 headers=self.headers,
                 timeout=10,
-                verify=certifi.where()
+                verify=False
             )
             logger.info(f"RAW API RESPONSE: {resp.text[:500]}...")
             if resp.status_code != 200:
