@@ -627,7 +627,7 @@ def optimize_xgboost_params(X_train, y_train, n_trials=20):
 # MODEL TRAINING
 # ============================================================================
 
-def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_params, backtest_mode=False, backtest_date=None, horizon: int = 1):
+def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_params, backtest_mode=False, backtest_date=None, horizon: int = 1, ci_mode: str = 'wide'):
     logger.info("=" * 60)
     logger.info(f"PREPARING DATA FOR {ticker}")
     if backtest_mode:
@@ -775,17 +775,19 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
             logger.info(f" {feat}: {imp:.4f}")
 
         logger.info("Training quantile regression models...")
-        lower_params = {**xgb_params, 'objective': 'reg:quantileerror', 'quantile_alpha': 0.05}
+        X_q_flat, y_q, lower_alpha, upper_alpha = _get_ci_params(ci_mode, X_train_flat, y_train)
+
+        lower_params = {**xgb_params, 'objective': 'reg:quantileerror', 'quantile_alpha': lower_alpha}
         median_params = {**xgb_params, 'objective': 'reg:quantileerror', 'quantile_alpha': 0.5}
-        upper_params = {**xgb_params, 'objective': 'reg:quantileerror', 'quantile_alpha': 0.95}
+        upper_params = {**xgb_params, 'objective': 'reg:quantileerror', 'quantile_alpha': upper_alpha}
 
         lower_model = xgb.XGBRegressor(**lower_params)
         median_model = xgb.XGBRegressor(**median_params)
         upper_model = xgb.XGBRegressor(**upper_params)
 
-        lower_model.fit(X_train_flat, y_train)
-        median_model.fit(X_train_flat, y_train)
-        upper_model.fit(X_train_flat, y_train)
+        lower_model.fit(X_q_flat, y_q)
+        median_model.fit(X_q_flat, y_q)
+        upper_model.fit(X_q_flat, y_q)
         logger.info("✓ Quantile models trained")
 
         logger.info("Generating level 0 predictions...")
@@ -896,7 +898,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
 # BACKTESTING FUNCTIONS
 # ============================================================================
 
-def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params):
+def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params, ci_mode: str = 'wide'):
     """
     Запуск бэктеста: обучение до backtest_date, прогноз на следующие дни,
     сравнение с реальными данными.
@@ -925,7 +927,8 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params)
             data, ticker, backtest_date,
             best_lstm_params, best_xgb_params,
             backtest_mode=True, backtest_date=backtest_date,
-            horizon=h
+            horizon=h,
+            ci_mode=ci_mode
         )
 
     merged = merge_horizon_results(all_results)
@@ -1145,6 +1148,7 @@ if __name__ == '__main__':
     n_trials = user_params['n_trials']
     show_ci = user_params['show_ci']
     show_plot = user_params['show_plot']
+    ci_mode = user_params.get('ci_mode', 'wide')
 
     # Определяем даты загрузки данных
     start_date = '2014-01-01'
@@ -1321,7 +1325,8 @@ if __name__ == '__main__':
                 data, ticker, end_date,
                 best_lstm_params, best_xgb_params,
                 backtest_mode=False,
-                horizon=h
+                horizon=h,
+                ci_mode=ci_mode
             )
 
         merged = merge_horizon_results(all_results)
