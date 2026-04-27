@@ -52,7 +52,9 @@ from config import (
     LSTM_LEARNING_RATE, LSTM_DROPOUT_RATE, LSTM_UNITS,
     XGBOOST_N_ESTIMATORS, XGBOOST_MAX_DEPTH, XGBOOST_LEARNING_RATE,
     XGBOOST_SUBSAMPLE, XGBOOST_COLSAMPLE_BYTREE, XGBOOST_RANDOM_STATE,
-    XGBOOST_VERBOSITY, OUTPUT_ROOT
+    XGBOOST_VERBOSITY, OUTPUT_ROOT,
+    META_N_ESTIMATORS, META_MAX_DEPTH, META_LEARNING_RATE,
+    META_SUBSAMPLE, META_COLSAMPLE_BYTREE
 )
 
 MODEL_VERSION = os.path.splitext(os.path.basename(__file__))[0]
@@ -708,11 +710,11 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
 
         logger.info("Training Meta-Learner...")
         meta_params = {
-            'n_estimators': 100,
-            'max_depth': 6,
-            'learning_rate': 0.03,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
+            'n_estimators': META_N_ESTIMATORS,
+            'max_depth': META_MAX_DEPTH,
+            'learning_rate': META_LEARNING_RATE,
+            'subsample': META_SUBSAMPLE,
+            'colsample_bytree': META_COLSAMPLE_BYTREE,
             'random_state': XGBOOST_RANDOM_STATE,
             'verbosity': XGBOOST_VERBOSITY
         }
