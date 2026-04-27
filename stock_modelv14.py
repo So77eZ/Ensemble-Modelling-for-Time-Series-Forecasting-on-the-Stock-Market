@@ -1259,7 +1259,7 @@ if __name__ == '__main__':
     # Основной запуск модели
     if backtest_mode:
         # Режим бэктеста
-        backtest_results = run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params)
+        backtest_results = run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params, ci_mode=ci_mode)
 
         if backtest_results and backtest_results[0]:
             results_list, forecasts, forecast_dates, confidence_intervals = backtest_results
