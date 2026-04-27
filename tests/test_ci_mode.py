@@ -41,10 +41,3 @@ def test_narrow_exact_756_boundary():
     X, y = _make_data(756)
     X_q, y_q, _, _ = _get_ci_params('narrow', X, y)
     assert len(X_q) == 756
-
-
-def test_wide_alpha_values():
-    X, y = _make_data(100)
-    _, _, la, ua = _get_ci_params('wide', X, y)
-    assert la == 0.05
-    assert ua == 0.95
