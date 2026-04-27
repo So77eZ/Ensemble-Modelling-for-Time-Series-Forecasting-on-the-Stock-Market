@@ -844,7 +844,10 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     if backtest_mode and backtest_date:
         base_date = datetime.strptime(backtest_date, '%Y-%m-%d')
     else:
-        base_date = datetime.strptime(end_date, '%Y-%m-%d')
+        # Используем последнюю дату в данных, а не дату запуска:
+        # end_date — сегодня, но MOEX возвращает данные до вчера (рынок ещё не закрылся).
+        # Если взять end_date, next_business_day пропустит сегодня и прогноз начнётся с послезавтра.
+        base_date = pd.to_datetime(data['Date'].max()).to_pydatetime()
 
     last_features = data[features].tail(LSTM_LOOK_BACK)
     last_scaled = scaler.transform(last_features)
