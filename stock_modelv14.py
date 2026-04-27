@@ -1075,7 +1075,15 @@ def get_user_inputs():
     print("\n4. Параметры визуализации:")
     show_ci = input("   Показывать доверительные интервалы на графике? (y/n, по умолчанию n): ").strip().lower() == 'y'
     show_plot = input("   Показывать график после обучения? (y/n, по умолчанию n): ").strip().lower() == 'y'
-    
+
+    print("\n5. Режим доверительных интервалов:")
+    print("   [1] Широкий  — 5/95 перцентили, полная история обучения")
+    print("                  (академический: учитывает все кризисы, в т.ч. 2022)")
+    print("   [2] Узкий    — 25/75 перцентили, последние 3 года")
+    print("                  (практический: актуальная волатильность)")
+    ci_mode_input = input("   Режим CI (1/2, по умолчанию 1): ").strip()
+    ci_mode = 'narrow' if ci_mode_input == '2' else 'wide'
+
     print("\n" + "="*60)
     print("ПАРАМЕТРЫ ЗАПУСКА:")
     print(f"  Тикер: {ticker}")
@@ -1085,6 +1093,8 @@ def get_user_inputs():
     print(f"  Оптимизация: {'Да (' + str(n_trials) + ' итераций)' if optimize else 'Нет (используются сохраненные/дефолтные)'}")
     print(f"  Доверительные интервалы: {'Да' if show_ci else 'Нет'}")
     print(f"  Показать график: {'Да' if show_plot else 'Нет'}")
+    ci_label = 'Узкий (25/75, последние 3 года)' if ci_mode == 'narrow' else 'Широкий (5/95, вся история)'
+    print(f"  Режим CI: {ci_label}")
     print("="*60)
     
     confirm = input("\nПродолжить с этими параметрами? (y/n, по умолчанию y): ").strip().lower()
@@ -1099,7 +1109,8 @@ def get_user_inputs():
         'optimize': optimize,
         'n_trials': n_trials,
         'show_ci': show_ci,
-        'show_plot': show_plot
+        'show_plot': show_plot,
+        'ci_mode': ci_mode
     }
 
 # ============================================================================
