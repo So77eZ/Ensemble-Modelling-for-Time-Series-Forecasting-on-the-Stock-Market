@@ -804,95 +804,46 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     best_model, best_xgb_model, best_meta_learner, best_lower_model, best_median_model, best_upper_model = models[-1]
 
     logger.info("Generating forecasts...")
-    forecast_horizons = [1, 2, 3]
     forecasts = {}
     confidence_intervals = {}
-    
-    # Определяем базовую дату для прогнозов
+
     if backtest_mode and backtest_date:
         base_date = datetime.strptime(backtest_date, '%Y-%m-%d')
     else:
         base_date = datetime.strptime(end_date, '%Y-%m-%d')
-    
-    forecast_base = data.copy()
-    
-    for horizon in forecast_horizons:
-        forecast_prices = []
-        lower_bounds = []
-        upper_bounds = []
-        
-        temp_df = forecast_base.copy()
-        
-        for day in range(horizon):
-            last_features = temp_df[features].tail(LSTM_LOOK_BACK)
-            last_scaled = scaler.transform(last_features)
-            last_scaled_df = pd.DataFrame(last_scaled, columns=features, index=last_features.index)
 
-            lstm_pred_scaled = best_model.predict(
-                last_scaled_df.values.reshape(1, LSTM_LOOK_BACK, len(features)),
-                verbose=0
-            )[0][0]
+    last_features = data[features].tail(LSTM_LOOK_BACK)
+    last_scaled = scaler.transform(last_features)
+    last_scaled_df = pd.DataFrame(last_scaled, columns=features, index=last_features.index)
 
-            current_scaled_flat = last_scaled.reshape(1, -1)
-            xgb_pred_scaled = best_xgb_model.predict(current_scaled_flat)[0]
+    lstm_pred_scaled = best_model.predict(
+        last_scaled_df.values.reshape(1, LSTM_LOOK_BACK, len(features)),
+        verbose=0
+    )[0][0]
 
-            meta_input = np.array([[lstm_pred_scaled, xgb_pred_scaled]])
-            pred_close_scaled = best_meta_learner.predict(meta_input)[0]
-            pred_close = close_scaler.inverse_transform([[pred_close_scaled]])[0][0]
+    current_scaled_flat = last_scaled.reshape(1, -1)
+    xgb_pred_scaled = best_xgb_model.predict(current_scaled_flat)[0]
 
-            lower_scaled = best_lower_model.predict(current_scaled_flat)[0]
-            upper_scaled = best_upper_model.predict(current_scaled_flat)[0]
+    meta_input = np.array([[lstm_pred_scaled, xgb_pred_scaled]])
+    pred_close_scaled = best_meta_learner.predict(meta_input)[0]
+    pred_close = close_scaler.inverse_transform([[pred_close_scaled]])[0][0]
 
-            lower = close_scaler.inverse_transform([[lower_scaled]])[0][0]
-            upper = close_scaler.inverse_transform([[upper_scaled]])[0][0]
-            
-            if lower > upper:
-                lower, upper = upper, lower
+    lower_scaled = best_lower_model.predict(current_scaled_flat)[0]
+    upper_scaled = best_upper_model.predict(current_scaled_flat)[0]
+    lower = close_scaler.inverse_transform([[lower_scaled]])[0][0]
+    upper = close_scaler.inverse_transform([[upper_scaled]])[0][0]
+    if lower > upper:
+        lower, upper = upper, lower
 
-            forecast_prices.append(pred_close)
-            lower_bounds.append(lower)
-            upper_bounds.append(upper)
+    forecasts[horizon] = [pred_close]
+    confidence_intervals[horizon] = ([lower], [upper])
 
-            prev_close = temp_df['Close'].iloc[-1]
-            
-            if len(temp_df) > 1:
-                volatility = abs(temp_df['Close'].iloc[-1] - temp_df['Close'].iloc[-2])
-            else:
-                volatility = pred_close * 0.01
-            
-            new_data = {
-                'Date': next_business_day(base_date, day + 1),
-                'Open': float(prev_close),
-                'High': float(max(prev_close, pred_close) + volatility * 0.3),
-                'Low': float(min(prev_close, pred_close) - volatility * 0.3),
-                'Close': float(pred_close),
-                'Volume': float(temp_df['Volume'].iloc[-1])
-            }
-            
-            for col in features:
-                if col not in ['Open', 'High', 'Low', 'Close', 'Volume']:
-                    if col in temp_df.columns:
-                        new_data[col] = float(temp_df[col].iloc[-1])
-                    else:
-                        new_data[col] = 0.0
-            
-            new_row = pd.DataFrame([new_data])
-            temp_df = pd.concat([temp_df, new_row], ignore_index=True)
-            
-            temp_df = update_technical_indicators_single_row(temp_df, len(temp_df) - 1)
+    forecast_dates = [next_business_day(base_date, i + 1) for i in range(3)]
 
-            logger.info(
-                f"Horizon {horizon}, Day {day + 1}: Forecast={pred_close:.2f}, "
-                f"Open={new_data['Open']:.2f}, High={new_data['High']:.2f}, "
-                f"Low={new_data['Low']:.2f}, Lower CI={lower:.2f}, Upper CI={upper:.2f}"
-            )
-
-        forecasts[horizon] = forecast_prices
-        confidence_intervals[horizon] = (lower_bounds, upper_bounds)
-
-    forecast_dates = [next_business_day(base_date, i + 1) for i in range(max(forecast_horizons))]
-
-    logger.info("Forecast logic check: No forward-looking indicators used; updates are sequential.")
+    logger.info(
+        f"Horizon {horizon}: Forecast={pred_close:.2f}, "
+        f"Lower CI={lower:.2f}, Upper CI={upper:.2f}"
+    )
 
     return (
         data,
