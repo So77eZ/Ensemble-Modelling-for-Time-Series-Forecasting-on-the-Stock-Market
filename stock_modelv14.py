@@ -1126,6 +1126,8 @@ if __name__ == '__main__':
     parser.add_argument('--backtest', type=str, default=None, help='Backtest date (YYYY-MM-DD)')
     parser.add_argument('--optimize', action='store_true', help='Run Optuna optimization')
     parser.add_argument('--trials', type=int, default=20, help='Optuna trials')
+    parser.add_argument('--ci-mode', choices=['wide', 'narrow'], default='wide',
+                        help='CI mode: wide=5/95 full history, narrow=25/75 last 3y')
     args = parser.parse_args()
 
     if args.no_gui:
@@ -1146,7 +1148,8 @@ if __name__ == '__main__':
             'optimize': args.optimize,
             'n_trials': args.trials,
             'show_ci': False,
-            'show_plot': not args.no_gui
+            'show_plot': not args.no_gui,
+            'ci_mode': args.ci_mode
         }
     else:
         # Interactive mode
