@@ -886,18 +886,24 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params)
     logger.info(f"Available future data: {len(future_data)} trading days")
     logger.info(f"Future data dates: {future_data['Date'].min()} to {future_data['Date'].max()}")
     
-    # Обучаем модель на данных до backtest_date
-    result = prepare_and_train_model(
-        data, ticker, backtest_date, 
-        best_lstm_params, best_xgb_params,
-        backtest_mode=True, backtest_date=backtest_date
-    )
-    
-    if result[0] is None:
+    # Обучаем модель на данных до backtest_date для трех горизонтов
+    all_results = {}
+    for h in [1, 2, 3]:
+        all_results[h] = prepare_and_train_model(
+            data, ticker, backtest_date,
+            best_lstm_params, best_xgb_params,
+            backtest_mode=True, backtest_date=backtest_date,
+            horizon=h
+        )
+
+    if all_results[1][0] is None:
         return None
-    
-    data_train, real_prices, final_pred, forecasts, forecast_dates, confidence_intervals, \
-        rmse_val, mae_val, r2_val, scaler, close_scaler, features = result
+
+    data_train, real_prices, final_pred, _, forecast_dates, _, \
+        rmse_val, mae_val, r2_val, scaler, close_scaler, features = all_results[1]
+
+    forecasts = {h: all_results[h][3][h] for h in [1, 2, 3]}
+    confidence_intervals = {h: all_results[h][5][h] for h in [1, 2, 3]}
     
     # Сравниваем прогнозы с реальными данными
     backtest_results = []
