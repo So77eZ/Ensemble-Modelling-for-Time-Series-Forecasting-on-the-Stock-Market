@@ -1169,6 +1169,10 @@ if __name__ == '__main__':
 
         data_for_opt = data_for_opt.infer_objects(copy=False).fillna(0)
 
+        for col in ['market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'value_usd', 'beta']:
+            if col not in data_for_opt.columns:
+                data_for_opt[col] = 0.0
+
         features = [
             'Open', 'High', 'Low', 'Close', 'Volume',
             'SMA_10', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Histogram',
