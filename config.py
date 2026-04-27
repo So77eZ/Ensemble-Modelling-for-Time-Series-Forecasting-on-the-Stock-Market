@@ -53,6 +53,10 @@ XGBOOST_RANDOM_STATE: int = 42
 # Уровень логирования XGBoost (0 = тихий)
 XGBOOST_VERBOSITY: int = 0
 
+# Устройство вычислений XGBoost: 'cpu' или 'cuda' (требует CUDA 12.8+ и XGBoost 2.0+)
+# RTX 5070 Ti (Blackwell/GB203): установить 'cuda' для ускорения на GPU
+XGBOOST_DEVICE: str = 'cpu'
+
 # -----------------------------------------------------------------------------
 # Meta-Learner (XGBoost stacking ensemble)
 # Входные признаки: [lstm_pred, xgb_pred] — 2 признака.

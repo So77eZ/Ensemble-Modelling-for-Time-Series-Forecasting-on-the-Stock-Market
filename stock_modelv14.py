@@ -52,7 +52,7 @@ from config import (
     LSTM_LEARNING_RATE, LSTM_DROPOUT_RATE, LSTM_UNITS,
     XGBOOST_N_ESTIMATORS, XGBOOST_MAX_DEPTH, XGBOOST_LEARNING_RATE,
     XGBOOST_SUBSAMPLE, XGBOOST_COLSAMPLE_BYTREE, XGBOOST_RANDOM_STATE,
-    XGBOOST_VERBOSITY, OUTPUT_ROOT,
+    XGBOOST_VERBOSITY, XGBOOST_DEVICE, OUTPUT_ROOT,
     META_N_ESTIMATORS, META_MAX_DEPTH, META_LEARNING_RATE,
     META_SUBSAMPLE, META_COLSAMPLE_BYTREE
 )
@@ -521,7 +521,8 @@ def optimize_xgboost_params(X_train, y_train, n_trials=20):
             'subsample': trial.suggest_float('subsample', 0.6, 1.0),
             'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
             'random_state': XGBOOST_RANDOM_STATE,
-            'verbosity': XGBOOST_VERBOSITY
+            'verbosity': XGBOOST_VERBOSITY,
+            'device': XGBOOST_DEVICE
         }
         split = int(len(X_train) * 0.8)
         X_tr, X_val = X_train[:split], X_train[split:]
@@ -663,7 +664,8 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         xgb_params = {
             **best_xgb_params,
             'random_state': XGBOOST_RANDOM_STATE,
-            'verbosity': XGBOOST_VERBOSITY
+            'verbosity': XGBOOST_VERBOSITY,
+            'device': XGBOOST_DEVICE
         }
         
         X_train_flat = X_train.reshape(X_train.shape[0], -1)
@@ -716,7 +718,8 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
             'subsample': META_SUBSAMPLE,
             'colsample_bytree': META_COLSAMPLE_BYTREE,
             'random_state': XGBOOST_RANDOM_STATE,
-            'verbosity': XGBOOST_VERBOSITY
+            'verbosity': XGBOOST_VERBOSITY,
+            'device': XGBOOST_DEVICE
         }
         meta_learner = xgb.XGBRegressor(**meta_params)
         meta_learner.fit(meta_train, y_train)
