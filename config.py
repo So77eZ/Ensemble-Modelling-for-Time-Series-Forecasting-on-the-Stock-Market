@@ -55,7 +55,7 @@ XGBOOST_VERBOSITY: int = 0
 
 # Устройство вычислений XGBoost: 'cpu' или 'cuda' (требует CUDA 12.8+ и XGBoost 2.0+)
 # RTX 5070 Ti (Blackwell/GB203): установить 'cuda' для ускорения на GPU
-XGBOOST_DEVICE: str = 'cpu'
+XGBOOST_DEVICE: str = 'cuda'
 
 # -----------------------------------------------------------------------------
 # Meta-Learner (XGBoost stacking ensemble)
