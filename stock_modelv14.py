@@ -1285,6 +1285,27 @@ if __name__ == '__main__':
                     print(f"  Confidence Interval: [{lower:.2f}, {upper:.2f}]")
             print("="*60)
 
+            logger.info("\n" + "=" * 72)
+            logger.info(f"FORECAST SUMMARY: {ticker}  (ci_mode={ci_mode})")
+            logger.info("=" * 72)
+            logger.info("%-5s  %-12s  %-9s  %-7s  %-7s  %-6s  %s",
+                        "H", "Date", "Forecast", "RMSE", "MAE", "R²", "CI [lower – upper]  width")
+            logger.info("-" * 72)
+            for h in [1, 2, 3]:
+                h_price  = forecasts[h][-1]
+                h_lower  = confidence_intervals[h][0][-1]
+                h_upper  = confidence_intervals[h][1][-1]
+                h_width  = h_upper - h_lower
+                h_rmse   = all_results[h][6]
+                h_mae    = all_results[h][7]
+                h_r2     = all_results[h][8]
+                h_date   = all_results[h][4][-1].strftime('%d.%m.%Y')
+                ci_ok    = "✓" if h_lower <= h_price <= h_upper else "✗"
+                logger.info("+%dd    %-12s  %7.2f    %6.2f  %6.2f  %.3f  [%6.2f – %6.2f]  %5.2f %s",
+                            h, h_date, h_price, h_rmse, h_mae, h_r2,
+                            h_lower, h_upper, h_width, ci_ok)
+            logger.info("=" * 72)
+
             graphs_dir = os.path.join(MODEL_OUTPUT_DIR, 'graphs')
             logs_dir = os.path.join(MODEL_OUTPUT_DIR, 'logs')
             os.makedirs(graphs_dir, exist_ok=True)
@@ -1351,17 +1372,20 @@ if __name__ == '__main__':
                 f.write(f'Model version: {MODEL_VERSION}\n')
                 f.write(f'LSTM Params: units={best_lstm_params["units"]}, dropout={best_lstm_params["dropout"]:.4f}, lr={best_lstm_params["lr"]:.6f}\n')
                 f.write(f'XGBoost Params: n_estimators={best_xgb_params["n_estimators"]}, max_depth={best_xgb_params["max_depth"]}, lr={best_xgb_params["learning_rate"]:.4f}\n')
-                f.write('\nQUALITY METRICS (Avg over splits):\n')
-                f.write(f' RMSE: {rmse_val:.4f}\n')
-                f.write(f' MAE: {mae_val:.4f}\n')
-                f.write(f' R²: {r2_val:.4f}\n')
-                f.write('\nFORECASTS:\n')
-                for horizon in [1, 2, 3]:
-                    prices = forecasts[horizon]
-                    lower, upper = confidence_intervals[horizon]
-                    f.write(f'{horizon} days ahead:\n')
-                    for day_idx, (price, low, up) in enumerate(zip(prices, lower, upper), 1):
-                        f.write(f'  Day {day_idx}: Price={price:.2f}, CI=[{low:.2f}, {up:.2f}]\n')
+                f.write('\nQUALITY METRICS & FORECASTS (avg over 3 walk-forward splits):\n')
+                f.write(f" {'H':<4}  {'Date':<12}  {'Forecast':>9}  {'RMSE':>7}  {'MAE':>7}  {'R²':>6}  CI [lower – upper]  width\n")
+                f.write(f" {'-'*78}\n")
+                for h in [1, 2, 3]:
+                    h_price = forecasts[h][-1]
+                    h_lower = confidence_intervals[h][0][-1]
+                    h_upper = confidence_intervals[h][1][-1]
+                    h_width = h_upper - h_lower
+                    h_rmse  = all_results[h][6]
+                    h_mae   = all_results[h][7]
+                    h_r2    = all_results[h][8]
+                    h_date  = all_results[h][4][-1].strftime('%d.%m.%Y')
+                    ci_ok   = "✓" if h_lower <= h_price <= h_upper else "✗"
+                    f.write(f" +{h}d   {h_date:<12}  {h_price:>9.2f}  {h_rmse:>7.4f}  {h_mae:>7.4f}  {h_r2:>6.4f}  [{h_lower:.2f} – {h_upper:.2f}]  {h_width:.2f} {ci_ok}\n")
 
             logger.info(f"[OK] Log saved: {log_path}")
 
