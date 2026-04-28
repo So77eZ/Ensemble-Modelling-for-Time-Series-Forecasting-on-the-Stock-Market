@@ -258,8 +258,11 @@ python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
 │                                                                 │
 │  outputs/{MODEL_VERSION}/                                       │
 │  ├── logs/                                                      │
-│  │   ├── training_detailed_{timestamp}.log  (основной лог)      │
-│  │   └── {TICKER}_forecast_v14_{timestamp}.txt  (результаты)    │
+│  │   ├── training_detailed_{timestamp}.log  (основной лог;      │
+│  │   │     включает FORECAST SUMMARY: per-horizon прогноз,      │
+│  │   │     RMSE/MAE/R², CI [lower–upper], ширина, флаг ✓/✗)     │
+│  │   └── {TICKER}_forecast_v14_{timestamp}.txt  (результаты;    │
+│  │         per-horizon метрики для всех 3 горизонтов)            │
 │  ├── graphs/                                                    │
 │  │   └── {TICKER}_price_forecast_v14_{timestamp}.jpg            │
 │  ├── hyperparams/                                               │
@@ -322,7 +325,8 @@ X, y → Optuna (опционально) → best_lstm_params, best_xgb_params
         → метрики RMSE, MAE, R²
     Финальные модели (из 3-го сплита) → прямой прогноз на день h
 
-[Прогноз] → график (.jpg) + лог (.txt)
+[Прогноз] → FORECAST SUMMARY в logger (per-horizon RMSE/MAE/R², CI ✓/✗)
+         → график (.jpg) + отчёт (.txt) с per-horizon метриками
 [Бэктест] → сравнение с реальными данными → accuracy report (.txt)
 ```
 
