@@ -688,22 +688,6 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         for feat, imp in sorted_importances[:10]:
             logger.info(f" {feat}: {imp:.4f}")
 
-        logger.info("Training quantile regression models...")
-        X_q_flat, y_q, lower_alpha, upper_alpha = _get_ci_params(ci_mode, X_train_flat, y_train)
-
-        lower_params = {**xgb_params, 'objective': 'reg:quantileerror', 'quantile_alpha': lower_alpha}
-        median_params = {**xgb_params, 'objective': 'reg:quantileerror', 'quantile_alpha': 0.5}
-        upper_params = {**xgb_params, 'objective': 'reg:quantileerror', 'quantile_alpha': upper_alpha}
-
-        lower_model = xgb.XGBRegressor(**lower_params)
-        median_model = xgb.XGBRegressor(**median_params)
-        upper_model = xgb.XGBRegressor(**upper_params)
-
-        lower_model.fit(X_q_flat, y_q)
-        median_model.fit(X_q_flat, y_q)
-        upper_model.fit(X_q_flat, y_q)
-        logger.info("✓ Quantile models trained")
-
         logger.info("Generating level 0 predictions...")
         lstm_train_preds = lstm_model.predict(X_train, verbose=0).flatten()
         xgb_train_preds = xgb_model.predict(X_train_flat)
@@ -724,6 +708,24 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         meta_learner = xgb.XGBRegressor(**meta_params)
         meta_learner.fit(meta_train, y_train)
         logger.info("[OK] Meta-Learner trained")
+
+        # Квантильные модели обучаются на том же пространстве признаков [lstm_pred, xgb_pred],
+        # что и мета-лернер — иначе CI и точечный прогноз несопоставимы.
+        logger.info("Training quantile regression models on meta-features...")
+        meta_q, y_q, lower_alpha, upper_alpha = _get_ci_params(ci_mode, meta_train, y_train)
+
+        lower_params = {**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': lower_alpha}
+        median_params_q = {**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': 0.5}
+        upper_params = {**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': upper_alpha}
+
+        lower_model = xgb.XGBRegressor(**lower_params)
+        median_model = xgb.XGBRegressor(**median_params_q)
+        upper_model = xgb.XGBRegressor(**upper_params)
+
+        lower_model.fit(meta_q, y_q)
+        median_model.fit(meta_q, y_q)
+        upper_model.fit(meta_q, y_q)
+        logger.info("✓ Quantile models trained")
 
         lstm_test_preds = lstm_model.predict(X_test, verbose=0).flatten()
         X_test_flat = X_test.reshape(X_test.shape[0], -1)
@@ -780,8 +782,8 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     pred_close_scaled = best_meta_learner.predict(meta_input)[0]
     pred_close = close_scaler.inverse_transform([[pred_close_scaled]])[0][0]
 
-    lower_scaled = best_lower_model.predict(current_scaled_flat)[0]
-    upper_scaled = best_upper_model.predict(current_scaled_flat)[0]
+    lower_scaled = best_lower_model.predict(meta_input)[0]
+    upper_scaled = best_upper_model.predict(meta_input)[0]
     lower = close_scaler.inverse_transform([[lower_scaled]])[0][0]
     upper = close_scaler.inverse_transform([[upper_scaled]])[0][0]
     if lower > upper:
