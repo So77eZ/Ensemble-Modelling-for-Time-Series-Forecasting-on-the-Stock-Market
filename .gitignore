@@ -2,6 +2,9 @@
 .env
 .claude
 
+# Внутренние рабочие документы (планы, спецификации superpowers-агента)
+docs/superpowers/
+
 # Артефакты обучения
 outputs/
 

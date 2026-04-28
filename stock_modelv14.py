@@ -21,8 +21,10 @@ import argparse
 from datetime import datetime, timedelta
 
 import requests
-import certifi
+import urllib3
 import xml.etree.ElementTree as ET
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 import tensorflow as tf
 import logging
@@ -50,7 +52,9 @@ from config import (
     LSTM_LEARNING_RATE, LSTM_DROPOUT_RATE, LSTM_UNITS,
     XGBOOST_N_ESTIMATORS, XGBOOST_MAX_DEPTH, XGBOOST_LEARNING_RATE,
     XGBOOST_SUBSAMPLE, XGBOOST_COLSAMPLE_BYTREE, XGBOOST_RANDOM_STATE,
-    XGBOOST_VERBOSITY, OUTPUT_ROOT
+    XGBOOST_VERBOSITY, XGBOOST_DEVICE, OUTPUT_ROOT,
+    META_N_ESTIMATORS, META_MAX_DEPTH, META_LEARNING_RATE,
+    META_SUBSAMPLE, META_COLSAMPLE_BYTREE
 )
 
 MODEL_VERSION = os.path.splitext(os.path.basename(__file__))[0]
@@ -142,6 +146,36 @@ def next_business_day(date: datetime, n: int) -> datetime:
             added += 1
     return current
 
+def _forecast_dates_for_horizon(base_date: datetime, horizon: int) -> list:
+    """Возвращает список из horizon рабочих дней начиная с base_date+1."""
+    return [next_business_day(base_date, i + 1) for i in range(horizon)]
+
+
+def merge_horizon_results(all_results: dict):
+    """
+    Принимает {h: result_tuple} от трёх вызовов prepare_and_train_model.
+    Возвращает (forecasts, confidence_intervals) или None при любом сбое.
+    """
+    if any(r is None or r[0] is None for r in all_results.values()):
+        return None
+    forecasts = {h: all_results[h][3][h] for h in all_results}
+    confidence_intervals = {h: all_results[h][5][h] for h in all_results}
+    return forecasts, confidence_intervals
+
+
+def _get_ci_params(ci_mode: str, X_train: np.ndarray, y_train: np.ndarray):
+    """
+    Возвращает (X_q, y_q, lower_alpha, upper_alpha) для обучения квантильных моделей.
+    narrow: последние 756 строк (~3 торговых года), перцентили 25/75.
+    wide:   полная история, перцентили 5/95.
+    """
+    NARROW_WINDOW = 756
+    if ci_mode == 'narrow':
+        q_start = max(0, len(X_train) - NARROW_WINDOW)
+        return X_train[q_start:], y_train[q_start:], 0.25, 0.75
+    return X_train, y_train, 0.05, 0.95
+
+
 def get_usd_rub_rate() -> float:
     """Актуальный курс USD/RUB от ЦБ РФ. Fallback = 90.0 при ошибке."""
     try:
@@ -196,7 +230,7 @@ class TinkoffFundamentalLoader:
                 json=payload,
                 headers=self.headers,
                 timeout=10,
-                verify=certifi.where()
+                verify=False
             )
             if resp.status_code != 200:
                 logger.error(f"API Error (Shares): {resp.status_code} {resp.text}")
@@ -229,7 +263,7 @@ class TinkoffFundamentalLoader:
                 json=payload,
                 headers=self.headers,
                 timeout=10,
-                verify=certifi.where()
+                verify=False
             )
             logger.info(f"RAW API RESPONSE: {resp.text[:500]}...")
             if resp.status_code != 200:
@@ -442,96 +476,6 @@ def update_technical_indicators(data):
     data['Return_MA_10'] = returns.rolling(10).mean()
     return data
 
-def update_technical_indicators_single_row(data, idx):
-    """Обновление технических индикаторов для одной строки (для прогнозов)"""
-    if idx < 10:
-        data.at[idx, 'SMA_10'] = data['Close'][:idx+1].mean()
-    else:
-        data.at[idx, 'SMA_10'] = data['Close'][idx-9:idx+1].mean()
-
-    if idx == 0:
-        data.at[idx, 'EMA_20'] = data.at[idx, 'Close']
-    else:
-        alpha = 2 / 21
-        prev_ema = data.at[idx-1, 'EMA_20']
-        if pd.isna(prev_ema):
-            prev_ema = data.at[idx, 'Close']
-        data.at[idx, 'EMA_20'] = (data.at[idx, 'Close'] * alpha) + (prev_ema * (1 - alpha))
-
-    if idx >= 14:
-        window_data = data.iloc[max(0, idx-14):idx+1]
-        rsi_val = calculate_rsi(window_data, 14).iloc[-1]
-        data.at[idx, 'RSI_14'] = rsi_val if not pd.isna(rsi_val) else 50.0
-
-    if idx >= 26:
-        window_data = data.iloc[max(0, idx-26):idx+1]
-        macd, signal, hist = calculate_macd(window_data)
-        data.at[idx, 'MACD'] = macd.iloc[-1] if not pd.isna(macd.iloc[-1]) else 0.0
-        data.at[idx, 'MACD_Signal'] = signal.iloc[-1] if not pd.isna(signal.iloc[-1]) else 0.0
-        data.at[idx, 'MACD_Histogram'] = hist.iloc[-1] if not pd.isna(hist.iloc[-1]) else 0.0
-
-    if idx >= 20:
-        window_data = data.iloc[max(0, idx-20):idx+1]
-        bb_mid, bb_up, bb_low, bb_width = calculate_bollinger_bands(window_data)
-        data.at[idx, 'BB_Middle'] = bb_mid.iloc[-1] if not pd.isna(bb_mid.iloc[-1]) else data.at[idx, 'Close']
-        data.at[idx, 'BB_Upper'] = bb_up.iloc[-1] if not pd.isna(bb_up.iloc[-1]) else data.at[idx, 'Close']
-        data.at[idx, 'BB_Lower'] = bb_low.iloc[-1] if not pd.isna(bb_low.iloc[-1]) else data.at[idx, 'Close']
-        data.at[idx, 'BB_Width'] = bb_width.iloc[-1] if not pd.isna(bb_width.iloc[-1]) else 0.0
-
-    if idx >= 14:
-        window_data = data.iloc[max(0, idx-14):idx+1]
-        atr_val = calculate_atr(window_data, 14).iloc[-1]
-        data.at[idx, 'ATR_14'] = atr_val if not pd.isna(atr_val) else 0.0
-        
-        stoch_k, stoch_d = calculate_stochastic(window_data)
-        data.at[idx, 'Stoch_K'] = stoch_k.iloc[-1] if not pd.isna(stoch_k.iloc[-1]) else 50.0
-        data.at[idx, 'Stoch_D'] = stoch_d.iloc[-1] if not pd.isna(stoch_d.iloc[-1]) else 50.0
-        
-        adx_val = calculate_adx(window_data, 14).iloc[-1]
-        data.at[idx, 'ADX_14'] = adx_val if not pd.isna(adx_val) else 0.0
-
-    if idx >= 10:
-        window_data = data.iloc[max(0, idx-10):idx+1]
-        momentum_val = calculate_momentum(window_data, 10).iloc[-1]
-        data.at[idx, 'Momentum_10'] = momentum_val if not pd.isna(momentum_val) else 0.0
-
-    if idx >= 1:
-        window_data = data.iloc[max(0, idx-1):idx+1]
-        pc1_val = calculate_price_change(window_data, 1).iloc[-1]
-        data.at[idx, 'Price_Change_1'] = pc1_val if not pd.isna(pc1_val) else 0.0
-        
-    if idx >= 5:
-        window_data = data.iloc[max(0, idx-5):idx+1]
-        pc5_val = calculate_price_change(window_data, 5).iloc[-1]
-        data.at[idx, 'Price_Change_5'] = pc5_val if not pd.isna(pc5_val) else 0.0
-
-    if idx >= 5:
-        returns_5 = data['Close'].iloc[max(0, idx-5):idx+1].pct_change()
-        data.at[idx, 'Vol_Return_5'] = returns_5.std() if not pd.isna(returns_5.std()) else 0.0
-        data.at[idx, 'Return_MA_5'] = returns_5.mean() if not pd.isna(returns_5.mean()) else 0.0
-
-    if idx >= 10:
-        returns_10 = data['Close'].iloc[max(0, idx-10):idx+1].pct_change()
-        data.at[idx, 'Vol_Return_10'] = returns_10.std() if not pd.isna(returns_10.std()) else 0.0
-        data.at[idx, 'Return_MA_10'] = returns_10.mean() if not pd.isna(returns_10.mean()) else 0.0
-
-    if idx >= 20:
-        returns_20 = data['Close'].iloc[max(0, idx-20):idx+1].pct_change()
-        data.at[idx, 'Vol_Return_20'] = returns_20.std() if not pd.isna(returns_20.std()) else 0.0
-
-    for col in ['ATR_14', 'Stoch_K', 'Stoch_D', 'ADX_14', 'Momentum_10', 'Price_Change_1', 'Price_Change_5',
-                'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Histogram', 'BB_Middle', 'BB_Upper', 'BB_Lower', 'BB_Width',
-                'Vol_Return_5', 'Vol_Return_10', 'Vol_Return_20', 'Return_MA_5', 'Return_MA_10']:
-        if col in data.columns and pd.isna(data.at[idx, col]):
-            if col in ['Stoch_K', 'Stoch_D', 'RSI_14']:
-                data.at[idx, col] = 50.0
-            elif col in ['BB_Middle', 'BB_Upper', 'BB_Lower']:
-                data.at[idx, col] = data.at[idx, 'Close']
-            else:
-                data.at[idx, col] = 0.0
-
-    return data
-
 # ============================================================================
 # OPTUNA OPTIMIZATION
 # ============================================================================
@@ -577,7 +521,8 @@ def optimize_xgboost_params(X_train, y_train, n_trials=20):
             'subsample': trial.suggest_float('subsample', 0.6, 1.0),
             'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
             'random_state': XGBOOST_RANDOM_STATE,
-            'verbosity': XGBOOST_VERBOSITY
+            'verbosity': XGBOOST_VERBOSITY,
+            'device': XGBOOST_DEVICE
         }
         split = int(len(X_train) * 0.8)
         X_tr, X_val = X_train[:split], X_train[split:]
@@ -595,7 +540,7 @@ def optimize_xgboost_params(X_train, y_train, n_trials=20):
 # MODEL TRAINING
 # ============================================================================
 
-def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_params, backtest_mode=False, backtest_date=None):
+def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_params, backtest_mode=False, backtest_date=None, horizon: int = 1, ci_mode: str = 'wide'):
     logger.info("=" * 60)
     logger.info(f"PREPARING DATA FOR {ticker}")
     if backtest_mode:
@@ -613,6 +558,12 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         data[key] = value
 
     data = data.infer_objects(copy=False).fillna(0)
+
+    # Гарантируем наличие фундаментальных колонок (если Tinkoff API недоступен)
+    for col in ['market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'value_usd', 'beta']:
+        if col not in data.columns:
+            data[col] = 0.0
+
     logger.info(f"Data shape after cleaning: {data.shape}")
 
     features = [
@@ -650,11 +601,11 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     close_scaler = MinMaxScaler()
     close_scaler.fit(data[['Close']])
 
-    logger.info(f"Preparing sequences with look_back={LSTM_LOOK_BACK}...")
+    logger.info(f"Preparing sequences with look_back={LSTM_LOOK_BACK}, horizon={horizon}...")
     X, y = [], []
-    for i in range(LSTM_LOOK_BACK, len(scaled_df)):
+    for i in range(LSTM_LOOK_BACK, len(scaled_df) - horizon):
         X.append(scaled_df.iloc[i-LSTM_LOOK_BACK:i].values)
-        y.append(scaled_df['Close'].iloc[i])
+        y.append(scaled_df['Close'].iloc[i + horizon])
     X, y = np.array(X), np.array(y)
     logger.info(f"Total sequences: {len(X)}")
 
@@ -713,7 +664,8 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         xgb_params = {
             **best_xgb_params,
             'random_state': XGBOOST_RANDOM_STATE,
-            'verbosity': XGBOOST_VERBOSITY
+            'verbosity': XGBOOST_VERBOSITY,
+            'device': XGBOOST_DEVICE
         }
         
         X_train_flat = X_train.reshape(X_train.shape[0], -1)
@@ -736,20 +688,6 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         for feat, imp in sorted_importances[:10]:
             logger.info(f" {feat}: {imp:.4f}")
 
-        logger.info("Training quantile regression models...")
-        lower_params = {**xgb_params, 'objective': 'reg:quantileerror', 'quantile_alpha': 0.05}
-        median_params = {**xgb_params, 'objective': 'reg:quantileerror', 'quantile_alpha': 0.5}
-        upper_params = {**xgb_params, 'objective': 'reg:quantileerror', 'quantile_alpha': 0.95}
-
-        lower_model = xgb.XGBRegressor(**lower_params)
-        median_model = xgb.XGBRegressor(**median_params)
-        upper_model = xgb.XGBRegressor(**upper_params)
-
-        lower_model.fit(X_train_flat, y_train)
-        median_model.fit(X_train_flat, y_train)
-        upper_model.fit(X_train_flat, y_train)
-        logger.info("✓ Quantile models trained")
-
         logger.info("Generating level 0 predictions...")
         lstm_train_preds = lstm_model.predict(X_train, verbose=0).flatten()
         xgb_train_preds = xgb_model.predict(X_train_flat)
@@ -758,17 +696,36 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
 
         logger.info("Training Meta-Learner...")
         meta_params = {
-            'n_estimators': 100,
-            'max_depth': 6,
-            'learning_rate': 0.03,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
+            'n_estimators': META_N_ESTIMATORS,
+            'max_depth': META_MAX_DEPTH,
+            'learning_rate': META_LEARNING_RATE,
+            'subsample': META_SUBSAMPLE,
+            'colsample_bytree': META_COLSAMPLE_BYTREE,
             'random_state': XGBOOST_RANDOM_STATE,
-            'verbosity': XGBOOST_VERBOSITY
+            'verbosity': XGBOOST_VERBOSITY,
+            'device': XGBOOST_DEVICE
         }
         meta_learner = xgb.XGBRegressor(**meta_params)
         meta_learner.fit(meta_train, y_train)
         logger.info("[OK] Meta-Learner trained")
+
+        # Квантильные модели обучаются на том же пространстве признаков [lstm_pred, xgb_pred],
+        # что и мета-лернер — иначе CI и точечный прогноз несопоставимы.
+        logger.info("Training quantile regression models on meta-features...")
+        meta_q, y_q, lower_alpha, upper_alpha = _get_ci_params(ci_mode, meta_train, y_train)
+
+        lower_params = {**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': lower_alpha}
+        median_params_q = {**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': 0.5}
+        upper_params = {**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': upper_alpha}
+
+        lower_model = xgb.XGBRegressor(**lower_params)
+        median_model = xgb.XGBRegressor(**median_params_q)
+        upper_model = xgb.XGBRegressor(**upper_params)
+
+        lower_model.fit(meta_q, y_q)
+        median_model.fit(meta_q, y_q)
+        upper_model.fit(meta_q, y_q)
+        logger.info("✓ Quantile models trained")
 
         lstm_test_preds = lstm_model.predict(X_test, verbose=0).flatten()
         X_test_flat = X_test.reshape(X_test.shape[0], -1)
@@ -798,95 +755,49 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     best_model, best_xgb_model, best_meta_learner, best_lower_model, best_median_model, best_upper_model = models[-1]
 
     logger.info("Generating forecasts...")
-    forecast_horizons = [1, 2, 3]
     forecasts = {}
     confidence_intervals = {}
-    
-    # Определяем базовую дату для прогнозов
+
     if backtest_mode and backtest_date:
         base_date = datetime.strptime(backtest_date, '%Y-%m-%d')
     else:
-        base_date = datetime.strptime(end_date, '%Y-%m-%d')
-    
-    forecast_base = data.copy()
-    
-    for horizon in forecast_horizons:
-        forecast_prices = []
-        lower_bounds = []
-        upper_bounds = []
-        
-        temp_df = forecast_base.copy()
-        
-        for day in range(horizon):
-            last_features = temp_df[features].tail(LSTM_LOOK_BACK)
-            last_scaled = scaler.transform(last_features)
-            last_scaled_df = pd.DataFrame(last_scaled, columns=features, index=last_features.index)
+        # Используем последнюю дату в данных, а не дату запуска:
+        # end_date — сегодня, но MOEX возвращает данные до вчера (рынок ещё не закрылся).
+        # Если взять end_date, next_business_day пропустит сегодня и прогноз начнётся с послезавтра.
+        base_date = pd.to_datetime(data['Date'].max()).to_pydatetime()
 
-            lstm_pred_scaled = best_model.predict(
-                last_scaled_df.values.reshape(1, LSTM_LOOK_BACK, len(features)),
-                verbose=0
-            )[0][0]
+    last_features = data[features].tail(LSTM_LOOK_BACK)
+    last_scaled = scaler.transform(last_features)
+    last_scaled_df = pd.DataFrame(last_scaled, columns=features, index=last_features.index)
 
-            current_scaled_flat = last_scaled.reshape(1, -1)
-            xgb_pred_scaled = best_xgb_model.predict(current_scaled_flat)[0]
+    lstm_pred_scaled = best_model.predict(
+        last_scaled_df.values.reshape(1, LSTM_LOOK_BACK, len(features)),
+        verbose=0
+    )[0][0]
 
-            meta_input = np.array([[lstm_pred_scaled, xgb_pred_scaled]])
-            pred_close_scaled = best_meta_learner.predict(meta_input)[0]
-            pred_close = close_scaler.inverse_transform([[pred_close_scaled]])[0][0]
+    current_scaled_flat = last_scaled.reshape(1, -1)
+    xgb_pred_scaled = best_xgb_model.predict(current_scaled_flat)[0]
 
-            lower_scaled = best_lower_model.predict(current_scaled_flat)[0]
-            upper_scaled = best_upper_model.predict(current_scaled_flat)[0]
+    meta_input = np.array([[lstm_pred_scaled, xgb_pred_scaled]])
+    pred_close_scaled = best_meta_learner.predict(meta_input)[0]
+    pred_close = close_scaler.inverse_transform([[pred_close_scaled]])[0][0]
 
-            lower = close_scaler.inverse_transform([[lower_scaled]])[0][0]
-            upper = close_scaler.inverse_transform([[upper_scaled]])[0][0]
-            
-            if lower > upper:
-                lower, upper = upper, lower
+    lower_scaled = best_lower_model.predict(meta_input)[0]
+    upper_scaled = best_upper_model.predict(meta_input)[0]
+    lower = close_scaler.inverse_transform([[lower_scaled]])[0][0]
+    upper = close_scaler.inverse_transform([[upper_scaled]])[0][0]
+    if lower > upper:
+        lower, upper = upper, lower
 
-            forecast_prices.append(pred_close)
-            lower_bounds.append(lower)
-            upper_bounds.append(upper)
+    forecasts[horizon] = [pred_close]
+    confidence_intervals[horizon] = ([lower], [upper])
 
-            prev_close = temp_df['Close'].iloc[-1]
-            
-            if len(temp_df) > 1:
-                volatility = abs(temp_df['Close'].iloc[-1] - temp_df['Close'].iloc[-2])
-            else:
-                volatility = pred_close * 0.01
-            
-            new_data = {
-                'Date': next_business_day(base_date, day + 1),
-                'Open': float(prev_close),
-                'High': float(max(prev_close, pred_close) + volatility * 0.3),
-                'Low': float(min(prev_close, pred_close) - volatility * 0.3),
-                'Close': float(pred_close),
-                'Volume': float(temp_df['Volume'].iloc[-1])
-            }
-            
-            for col in features:
-                if col not in ['Open', 'High', 'Low', 'Close', 'Volume']:
-                    if col in temp_df.columns:
-                        new_data[col] = float(temp_df[col].iloc[-1])
-                    else:
-                        new_data[col] = 0.0
-            
-            new_row = pd.DataFrame([new_data])
-            temp_df = pd.concat([temp_df, new_row], ignore_index=True)
-            
-            temp_df = update_technical_indicators_single_row(temp_df, len(temp_df) - 1)
+    forecast_dates = _forecast_dates_for_horizon(base_date, horizon)
 
-            logger.info(
-                f"Horizon {horizon}, Day {day + 1}: Forecast={pred_close:.2f}, "
-                f"Open={new_data['Open']:.2f}, High={new_data['High']:.2f}, "
-                f"Low={new_data['Low']:.2f}, Lower CI={lower:.2f}, Upper CI={upper:.2f}"
-            )
-
-        forecasts[horizon] = forecast_prices
-        confidence_intervals[horizon] = (lower_bounds, upper_bounds)
-
-    forecast_dates = [next_business_day(base_date, i + 1) for i in range(max(forecast_horizons))]
-
-    logger.info("Forecast logic check: No forward-looking indicators used; updates are sequential.")
+    logger.info(
+        f"Horizon {horizon}: Forecast={pred_close:.2f}, "
+        f"Lower CI={lower:.2f}, Upper CI={upper:.2f}"
+    )
 
     return (
         data,
@@ -907,7 +818,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
 # BACKTESTING FUNCTIONS
 # ============================================================================
 
-def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params):
+def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params, ci_mode: str = 'wide'):
     """
     Запуск бэктеста: обучение до backtest_date, прогноз на следующие дни,
     сравнение с реальными данными.
@@ -929,19 +840,29 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params)
     logger.info(f"Available future data: {len(future_data)} trading days")
     logger.info(f"Future data dates: {future_data['Date'].min()} to {future_data['Date'].max()}")
     
-    # Обучаем модель на данных до backtest_date
-    result = prepare_and_train_model(
-        data, ticker, backtest_date, 
-        best_lstm_params, best_xgb_params,
-        backtest_mode=True, backtest_date=backtest_date
-    )
-    
-    if result[0] is None:
+    # Обучаем модель на данных до backtest_date для трех горизонтов
+    all_results = {}
+    for h in [1, 2, 3]:
+        all_results[h] = prepare_and_train_model(
+            data, ticker, backtest_date,
+            best_lstm_params, best_xgb_params,
+            backtest_mode=True, backtest_date=backtest_date,
+            horizon=h,
+            ci_mode=ci_mode
+        )
+
+    merged = merge_horizon_results(all_results)
+    if merged is None:
         return None
-    
-    data_train, real_prices, final_pred, forecasts, forecast_dates, confidence_intervals, \
-        rmse_val, mae_val, r2_val, scaler, close_scaler, features = result
-    
+
+    forecasts, confidence_intervals = merged
+
+    data_train, real_prices, final_pred, _, _, _, \
+        rmse_val, mae_val, r2_val, scaler, close_scaler, features = all_results[1]
+    forecast_dates = _forecast_dates_for_horizon(
+        datetime.strptime(backtest_date, '%Y-%m-%d'), 3
+    )
+
     # Сравниваем прогнозы с реальными данными
     backtest_results = []
     
@@ -1023,7 +944,7 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params)
 def get_user_inputs():
     """Собираем все параметры от пользователя в начале программы"""
     print("\n" + "="*60)
-    print("STOCK PRICE FORECASTING MODEL v13")
+    print("STOCK PRICE FORECASTING MODEL v14")
     print("="*60)
     
     # 1. Тикер
@@ -1074,7 +995,15 @@ def get_user_inputs():
     print("\n4. Параметры визуализации:")
     show_ci = input("   Показывать доверительные интервалы на графике? (y/n, по умолчанию n): ").strip().lower() == 'y'
     show_plot = input("   Показывать график после обучения? (y/n, по умолчанию n): ").strip().lower() == 'y'
-    
+
+    print("\n5. Режим доверительных интервалов:")
+    print("   [1] Широкий  — 5/95 перцентили, полная история обучения")
+    print("                  (академический: учитывает все кризисы, в т.ч. 2022)")
+    print("   [2] Узкий    — 25/75 перцентили, последние 3 года")
+    print("                  (практический: актуальная волатильность)")
+    ci_mode_input = input("   Режим CI (1/2, по умолчанию 1): ").strip()
+    ci_mode = 'narrow' if ci_mode_input == '2' else 'wide'
+
     print("\n" + "="*60)
     print("ПАРАМЕТРЫ ЗАПУСКА:")
     print(f"  Тикер: {ticker}")
@@ -1084,6 +1013,8 @@ def get_user_inputs():
     print(f"  Оптимизация: {'Да (' + str(n_trials) + ' итераций)' if optimize else 'Нет (используются сохраненные/дефолтные)'}")
     print(f"  Доверительные интервалы: {'Да' if show_ci else 'Нет'}")
     print(f"  Показать график: {'Да' if show_plot else 'Нет'}")
+    ci_label = 'Узкий (25/75, последние 3 года)' if ci_mode == 'narrow' else 'Широкий (5/95, вся история)'
+    print(f"  Режим CI: {ci_label}")
     print("="*60)
     
     confirm = input("\nПродолжить с этими параметрами? (y/n, по умолчанию y): ").strip().lower()
@@ -1098,7 +1029,8 @@ def get_user_inputs():
         'optimize': optimize,
         'n_trials': n_trials,
         'show_ci': show_ci,
-        'show_plot': show_plot
+        'show_plot': show_plot,
+        'ci_mode': ci_mode
     }
 
 # ============================================================================
@@ -1114,6 +1046,8 @@ if __name__ == '__main__':
     parser.add_argument('--backtest', type=str, default=None, help='Backtest date (YYYY-MM-DD)')
     parser.add_argument('--optimize', action='store_true', help='Run Optuna optimization')
     parser.add_argument('--trials', type=int, default=20, help='Optuna trials')
+    parser.add_argument('--ci-mode', choices=['wide', 'narrow'], default='wide',
+                        help='CI mode: wide=5/95 full history, narrow=25/75 last 3y')
     args = parser.parse_args()
 
     if args.no_gui:
@@ -1134,7 +1068,8 @@ if __name__ == '__main__':
             'optimize': args.optimize,
             'n_trials': args.trials,
             'show_ci': False,
-            'show_plot': not args.no_gui
+            'show_plot': not args.no_gui,
+            'ci_mode': args.ci_mode
         }
     else:
         # Interactive mode
@@ -1147,6 +1082,7 @@ if __name__ == '__main__':
     n_trials = user_params['n_trials']
     show_ci = user_params['show_ci']
     show_plot = user_params['show_plot']
+    ci_mode = user_params.get('ci_mode', 'wide')
 
     # Определяем даты загрузки данных
     start_date = '2014-01-01'
@@ -1185,6 +1121,10 @@ if __name__ == '__main__':
             data_for_opt[key] = value
 
         data_for_opt = data_for_opt.infer_objects(copy=False).fillna(0)
+
+        for col in ['market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'value_usd', 'beta']:
+            if col not in data_for_opt.columns:
+                data_for_opt[col] = 0.0
 
         features = [
             'Open', 'High', 'Low', 'Close', 'Volume',
@@ -1239,7 +1179,7 @@ if __name__ == '__main__':
     # Основной запуск модели
     if backtest_mode:
         # Режим бэктеста
-        backtest_results = run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params)
+        backtest_results = run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params, ci_mode=ci_mode)
 
         if backtest_results and backtest_results[0]:
             results_list, forecasts, forecast_dates, confidence_intervals = backtest_results
@@ -1313,15 +1253,25 @@ if __name__ == '__main__':
 
     else:
         # Обычный режим прогноза
-        result = prepare_and_train_model(
-            data, ticker, end_date,
-            best_lstm_params, best_xgb_params,
-            backtest_mode=False
-        )
+        all_results = {}
+        for h in [1, 2, 3]:
+            all_results[h] = prepare_and_train_model(
+                data, ticker, end_date,
+                best_lstm_params, best_xgb_params,
+                backtest_mode=False,
+                horizon=h,
+                ci_mode=ci_mode
+            )
 
-        if result[0] is not None:
-            data_res, real_prices, final_pred, forecasts, forecast_dates, confidence_intervals, \
-                rmse_val, mae_val, r2_val, scaler, close_scaler, features = result
+        merged = merge_horizon_results(all_results)
+        if merged is not None:
+            forecasts, confidence_intervals = merged
+
+            data_res, real_prices, final_pred, _, _, _, \
+                rmse_val, mae_val, r2_val, scaler, close_scaler, features = all_results[1]
+            forecast_dates = _forecast_dates_for_horizon(
+                datetime.strptime(end_date, '%Y-%m-%d'), 3
+            )
 
             print("\n" + "="*60)
             print("FORECAST SUMMARY")
@@ -1334,6 +1284,27 @@ if __name__ == '__main__':
                     lower, upper = confidence_intervals[horizon][0][-1], confidence_intervals[horizon][1][-1]
                     print(f"  Confidence Interval: [{lower:.2f}, {upper:.2f}]")
             print("="*60)
+
+            logger.info("\n" + "=" * 72)
+            logger.info(f"FORECAST SUMMARY: {ticker}  (ci_mode={ci_mode})")
+            logger.info("=" * 72)
+            logger.info("%-5s  %-12s  %-9s  %-7s  %-7s  %-6s  %s",
+                        "H", "Date", "Forecast", "RMSE", "MAE", "R²", "CI [lower – upper]  width")
+            logger.info("-" * 72)
+            for h in [1, 2, 3]:
+                h_price  = forecasts[h][-1]
+                h_lower  = confidence_intervals[h][0][-1]
+                h_upper  = confidence_intervals[h][1][-1]
+                h_width  = h_upper - h_lower
+                h_rmse   = all_results[h][6]
+                h_mae    = all_results[h][7]
+                h_r2     = all_results[h][8]
+                h_date   = all_results[h][4][-1].strftime('%d.%m.%Y')
+                ci_ok    = "✓" if h_lower <= h_price <= h_upper else "✗"
+                logger.info("+%dd    %-12s  %7.2f    %6.2f  %6.2f  %.3f  [%6.2f – %6.2f]  %5.2f %s",
+                            h, h_date, h_price, h_rmse, h_mae, h_r2,
+                            h_lower, h_upper, h_width, ci_ok)
+            logger.info("=" * 72)
 
             graphs_dir = os.path.join(MODEL_OUTPUT_DIR, 'graphs')
             logs_dir = os.path.join(MODEL_OUTPUT_DIR, 'logs')
@@ -1368,7 +1339,7 @@ if __name__ == '__main__':
                 plt.fill_between(cum_forecast_dates, cum_lower, cum_upper, alpha=0.2, label='CI (1-3 days)')
 
             plt.title(
-                f'Stock Price Forecast for {ticker} (v13)',
+                f'Stock Price Forecast for {ticker} (v14)',
                 fontsize=14,
                 fontweight='bold'
             )
@@ -1380,7 +1351,7 @@ if __name__ == '__main__':
             plt.tight_layout()
 
             timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            graph_filename = f'{ticker}_price_forecast_v13_{timestamp_str}.jpg'
+            graph_filename = f'{ticker}_price_forecast_v14_{timestamp_str}.jpg'
             graph_path = os.path.join(graphs_dir, graph_filename)
             plt.savefig(graph_path, dpi=300, bbox_inches='tight')
             logger.info(f"[OK] Graph saved: {graph_path}")
@@ -1390,28 +1361,31 @@ if __name__ == '__main__':
             else:
                 plt.close()
 
-            log_filename = f'{ticker}_forecast_v13_{timestamp_str}.txt'
+            log_filename = f'{ticker}_forecast_v14_{timestamp_str}.txt'
             log_path = os.path.join(logs_dir, log_filename)
             with open(log_path, 'w', encoding='utf-8') as f:
                 f.write(f"{'=' * 60}\n")
-                f.write('MODELING STOCK PRICE FORECAST: stock_modelv13\n')
+                f.write('MODELING STOCK PRICE FORECAST: stock_modelv14\n')
                 f.write(f"{'=' * 60}\n")
                 f.write(f'Ticker: {ticker}\n')
                 f.write(f'Run time: {datetime.now().isoformat()}\n')
                 f.write(f'Model version: {MODEL_VERSION}\n')
                 f.write(f'LSTM Params: units={best_lstm_params["units"]}, dropout={best_lstm_params["dropout"]:.4f}, lr={best_lstm_params["lr"]:.6f}\n')
                 f.write(f'XGBoost Params: n_estimators={best_xgb_params["n_estimators"]}, max_depth={best_xgb_params["max_depth"]}, lr={best_xgb_params["learning_rate"]:.4f}\n')
-                f.write('\nQUALITY METRICS (Avg over splits):\n')
-                f.write(f' RMSE: {rmse_val:.4f}\n')
-                f.write(f' MAE: {mae_val:.4f}\n')
-                f.write(f' R²: {r2_val:.4f}\n')
-                f.write('\nFORECASTS:\n')
-                for horizon in [1, 2, 3]:
-                    prices = forecasts[horizon]
-                    lower, upper = confidence_intervals[horizon]
-                    f.write(f'{horizon} days ahead:\n')
-                    for day_idx, (price, low, up) in enumerate(zip(prices, lower, upper), 1):
-                        f.write(f'  Day {day_idx}: Price={price:.2f}, CI=[{low:.2f}, {up:.2f}]\n')
+                f.write('\nQUALITY METRICS & FORECASTS (avg over 3 walk-forward splits):\n')
+                f.write(f" {'H':<4}  {'Date':<12}  {'Forecast':>9}  {'RMSE':>7}  {'MAE':>7}  {'R²':>6}  CI [lower – upper]  width\n")
+                f.write(f" {'-'*78}\n")
+                for h in [1, 2, 3]:
+                    h_price = forecasts[h][-1]
+                    h_lower = confidence_intervals[h][0][-1]
+                    h_upper = confidence_intervals[h][1][-1]
+                    h_width = h_upper - h_lower
+                    h_rmse  = all_results[h][6]
+                    h_mae   = all_results[h][7]
+                    h_r2    = all_results[h][8]
+                    h_date  = all_results[h][4][-1].strftime('%d.%m.%Y')
+                    ci_ok   = "✓" if h_lower <= h_price <= h_upper else "✗"
+                    f.write(f" +{h}d   {h_date:<12}  {h_price:>9.2f}  {h_rmse:>7.4f}  {h_mae:>7.4f}  {h_r2:>6.4f}  [{h_lower:.2f} – {h_upper:.2f}]  {h_width:.2f} {ci_ok}\n")
 
             logger.info(f"[OK] Log saved: {log_path}")
 
