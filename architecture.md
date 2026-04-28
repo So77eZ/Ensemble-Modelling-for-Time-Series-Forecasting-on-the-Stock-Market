@@ -1,5 +1,7 @@
 # Архитектура проекта: Stock Price Forecasting Model v14
 
+<!-- markdownlint-disable MD060 -->
+
 ## Обзор
 
 Система прогнозирования рыночных цен акций российского рынка (MOEX). Реализует стэкинг-ансамбль LSTM + XGBoost с доверительными интервалами на основе квантильной регрессии. Поддерживает два режима: прогноз на будущее и бэктест на исторических данных.
@@ -43,7 +45,6 @@ python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
 
 При запуске без CLI-аргументов скрипт запрашивает параметры интерактивно:
 
-<!-- markdownlint-disable MD060 -->
 | Шаг | Вопрос | Значения |
 | --- | --- | --- |
 | 1 | Тикер акции | Например: `SBER`, `LKOH`, `GAZP`; по умолчанию `SBER` |
@@ -55,7 +56,6 @@ python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
 | 4b | Показать график | `y` — открыть окно; `n` — только сохранить |
 | 5 | Режим CI | `1` — широкий 5/95 вся история; `2` — узкий 25/75 последние 3 года |
 | Подтверждение | Продолжить с выбранными параметрами | `y` / `n` |
-<!-- markdownlint-enable MD060 -->
 
 ---
 
@@ -276,7 +276,6 @@ python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
 
 ## Стек технологий
 
-<!-- markdownlint-disable MD060 -->
 | Библиотека | Версия | Роль |
 | --- | --- | --- |
 | `tensorflow` / `keras` | 2.x+ | LSTM-нейросеть (CPU на Windows; GPU не поддерживается в TF 2.11+) |
@@ -289,7 +288,6 @@ python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
 | `moexalgo` | — | Загрузка свечей с MOEX (основной источник) |
 | `requests` | — | HTTP-запросы к MOEX ISS и Tinkoff API |
 | `python-dotenv` | — | Загрузка `.env` конфигурации |
-<!-- markdownlint-enable MD060 -->
 
 ---
 
@@ -334,7 +332,6 @@ X, y → Optuna (опционально) → best_lstm_params, best_xgb_params
 
 ## Метрики качества
 
-<!-- markdownlint-disable MD060 -->
 | Метрика | Описание |
 | --- | --- |
 | RMSE | Root Mean Squared Error (среднеквадратичная ошибка) |
@@ -342,7 +339,6 @@ X, y → Optuna (опционально) → best_lstm_params, best_xgb_params
 | R² | Коэффициент детерминации |
 | Error % | Ошибка прогноза в % от реальной цены (в режиме бэктеста) |
 | CI Coverage | Доля случаев, когда реальная цена попала в доверительный интервал |
-<!-- markdownlint-enable MD060 -->
 
 ---
 
