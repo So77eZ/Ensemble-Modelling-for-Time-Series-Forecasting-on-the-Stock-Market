@@ -204,7 +204,7 @@ python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
 │                ОПТИМИЗАЦИЯ ГИПЕРПАРАМЕТРОВ (Optuna)             │
 │  (опционально, запускается до обучения финальной модели)        │
 │                                                                 │
-│  LSTM: units ∈ [32,128], dropout ∈ [0.1,0.5], lr ∈ [1e-4,1e-2]  │
+│  LSTM: units ∈ [32,128], dropout ∈ [0.1,0.5], lr ∈ [1e-4,1e-2] │
 │  XGB:  n_estimators, max_depth, lr, subsample, colsample_bytree │
 │                                                                 │
 │  Результаты сохраняются в:                                      │
