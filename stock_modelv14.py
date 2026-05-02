@@ -711,8 +711,13 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
 
         # Квантильные модели обучаются на том же пространстве признаков [lstm_pred, xgb_pred],
         # что и мета-лернер — иначе CI и точечный прогноз несопоставимы.
-        logger.info("Training quantile regression models on meta-features...")
+        logger.info("Training quantile regression models on residuals...")
         meta_q, y_q, lower_alpha, upper_alpha = _get_ci_params(ci_mode, meta_train, y_train)
+
+        # CI строится на остатках (actual − meta_pred), а не на абсолютных ценах.
+        # Это даёт симметричный интервал вокруг точечного прогноза вне зависимости
+        # от ценового уровня и направления тренда в обучающем окне.
+        residuals_q = y_q - meta_learner.predict(meta_q)
 
         lower_params = {**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': lower_alpha}
         median_params_q = {**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': 0.5}
@@ -722,9 +727,9 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         median_model = xgb.XGBRegressor(**median_params_q)
         upper_model = xgb.XGBRegressor(**upper_params)
 
-        lower_model.fit(meta_q, y_q)
-        median_model.fit(meta_q, y_q)
-        upper_model.fit(meta_q, y_q)
+        lower_model.fit(meta_q, residuals_q)
+        median_model.fit(meta_q, residuals_q)
+        upper_model.fit(meta_q, residuals_q)
         logger.info("✓ Quantile models trained")
 
         lstm_test_preds = lstm_model.predict(X_test, verbose=0).flatten()
@@ -782,10 +787,10 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     pred_close_scaled = best_meta_learner.predict(meta_input)[0]
     pred_close = close_scaler.inverse_transform([[pred_close_scaled]])[0][0]
 
-    lower_scaled = best_lower_model.predict(meta_input)[0]
-    upper_scaled = best_upper_model.predict(meta_input)[0]
-    lower = close_scaler.inverse_transform([[lower_scaled]])[0][0]
-    upper = close_scaler.inverse_transform([[upper_scaled]])[0][0]
+    lower_residual = best_lower_model.predict(meta_input)[0]
+    upper_residual = best_upper_model.predict(meta_input)[0]
+    lower = close_scaler.inverse_transform([[pred_close_scaled + lower_residual]])[0][0]
+    upper = close_scaler.inverse_transform([[pred_close_scaled + upper_residual]])[0][0]
     if lower > upper:
         lower, upper = upper, lower
 
