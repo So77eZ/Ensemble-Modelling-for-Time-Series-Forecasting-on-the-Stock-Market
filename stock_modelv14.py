@@ -619,6 +619,8 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     rmses, maes, r2s = [], [], []
     final_pred = []
     models = []
+    oos_meta_list: list = []
+    oos_residuals_list: list = []
 
     for i, (train_end, test_end) in enumerate(splits, 1):
         logger.info("\n" + "=" * 60)
@@ -709,34 +711,15 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         meta_learner.fit(meta_train, y_train)
         logger.info("[OK] Meta-Learner trained")
 
-        # Квантильные модели обучаются на том же пространстве признаков [lstm_pred, xgb_pred],
-        # что и мета-лернер — иначе CI и точечный прогноз несопоставимы.
-        logger.info("Training quantile regression models on residuals...")
-        meta_q, y_q, lower_alpha, upper_alpha = _get_ci_params(ci_mode, meta_train, y_train)
-
-        # CI строится на остатках (actual − meta_pred), а не на абсолютных ценах.
-        # Это даёт симметричный интервал вокруг точечного прогноза вне зависимости
-        # от ценового уровня и направления тренда в обучающем окне.
-        residuals_q = y_q - meta_learner.predict(meta_q)
-
-        lower_params = {**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': lower_alpha}
-        median_params_q = {**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': 0.5}
-        upper_params = {**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': upper_alpha}
-
-        lower_model = xgb.XGBRegressor(**lower_params)
-        median_model = xgb.XGBRegressor(**median_params_q)
-        upper_model = xgb.XGBRegressor(**upper_params)
-
-        lower_model.fit(meta_q, residuals_q)
-        median_model.fit(meta_q, residuals_q)
-        upper_model.fit(meta_q, residuals_q)
-        logger.info("✓ Quantile models trained")
-
         lstm_test_preds = lstm_model.predict(X_test, verbose=0).flatten()
         X_test_flat = X_test.reshape(X_test.shape[0], -1)
         xgb_test_preds = xgb_model.predict(X_test_flat)
         meta_test = np.column_stack((lstm_test_preds, xgb_test_preds))
         test_preds = meta_learner.predict(meta_test)
+
+        # Собираем OOS-остатки для CI (обучение после цикла)
+        oos_meta_list.append(meta_test)
+        oos_residuals_list.append(y_test - test_preds)
 
         test_preds_inv = close_scaler.inverse_transform(test_preds.reshape(-1, 1)).flatten()
         y_test_inv = close_scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
@@ -750,14 +733,31 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         r2s.append(r2)
 
         final_pred.extend(test_preds_inv)
-        models.append((lstm_model, xgb_model, meta_learner, lower_model, median_model, upper_model))
+        models.append((lstm_model, xgb_model, meta_learner))
 
     avg_rmse = np.mean(rmses)
     avg_mae = np.mean(maes)
     avg_r2 = np.mean(r2s)
     logger.info(f"Average Metrics: RMSE={avg_rmse:.4f}, MAE={avg_mae:.4f}, R2={avg_r2:.4f}")
 
-    best_model, best_xgb_model, best_meta_learner, best_lower_model, best_median_model, best_upper_model = models[-1]
+    # CI-модели обучаются на OOS-остатках всех walk-forward сплитов.
+    # OOS-остатки (actual − pred на тестовых окнах) честно отражают погрешность
+    # модели на невиданных данных, в отличие от in-sample остатков.
+    logger.info("Training CI quantile models on OOS residuals...")
+    oos_meta = np.vstack(oos_meta_list)
+    oos_residuals = np.concatenate(oos_residuals_list)
+    meta_q_oos, res_q, lower_alpha, upper_alpha = _get_ci_params(ci_mode, oos_meta, oos_residuals)
+    best_lower_model = xgb.XGBRegressor(
+        **{**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': lower_alpha}
+    )
+    best_upper_model = xgb.XGBRegressor(
+        **{**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': upper_alpha}
+    )
+    best_lower_model.fit(meta_q_oos, res_q)
+    best_upper_model.fit(meta_q_oos, res_q)
+    logger.info("✓ CI quantile models trained")
+
+    best_model, best_xgb_model, best_meta_learner = models[-1]
 
     logger.info("Generating forecasts...")
     forecasts = {}
