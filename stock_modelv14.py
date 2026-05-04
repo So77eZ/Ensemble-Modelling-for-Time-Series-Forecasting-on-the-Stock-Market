@@ -1002,6 +1002,53 @@ def append_benchmark_result(metrics: dict):
         f.write(row)
     return path
 
+
+def run_benchmark(data) -> dict:
+    logger.info("=" * 60)
+    logger.info("BENCHMARK MODE: SBER / %s / ci=%s / default params", BENCHMARK_DATE, BENCHMARK_CI_MODE)
+    logger.info("=" * 60)
+
+    lstm_p, xgb_p = get_default_hyperparams()
+    backtest_return = run_backtest(
+        data, BENCHMARK_TICKER, BENCHMARK_DATE,
+        lstm_p, xgb_p, ci_mode=BENCHMARK_CI_MODE,
+    )
+
+    if backtest_return is None or not backtest_return[0]:
+        raise RuntimeError("Benchmark failed: run_backtest returned no results")
+
+    results_list, _, _, _, all_results = backtest_return
+
+    horizons = {}
+    for res in results_list:
+        h = res['horizon']
+        horizons[h] = {
+            'forecast':  res['forecast'],
+            'real':      res['real'],
+            'error_pct': res['error_pct'],
+            'in_ci':     res['in_ci'],
+            'rmse':      all_results[h][6],
+            'mae':       all_results[h][7],
+            'r2':        all_results[h][8],
+        }
+
+    avg_rmse      = sum(horizons[h]['rmse']      for h in [1, 2, 3]) / 3
+    avg_mae       = sum(horizons[h]['mae']       for h in [1, 2, 3]) / 3
+    avg_r2        = sum(horizons[h]['r2']        for h in [1, 2, 3]) / 3
+    avg_error_pct = sum(horizons[h]['error_pct'] for h in [1, 2, 3]) / 3
+    ci_coverage   = sum(horizons[h]['in_ci']     for h in [1, 2, 3]) / 3 * 100
+
+    return {
+        'version':       MODEL_VERSION,
+        'run_at':        datetime.now().strftime('%Y-%m-%d %H:%M'),
+        'horizons':      horizons,
+        'avg_rmse':      avg_rmse,
+        'avg_mae':       avg_mae,
+        'avg_r2':        avg_r2,
+        'avg_error_pct': avg_error_pct,
+        'ci_coverage':   ci_coverage,
+    }
+
 # ============================================================================
 # USER INTERACTION
 # ============================================================================

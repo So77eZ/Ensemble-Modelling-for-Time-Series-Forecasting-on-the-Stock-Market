@@ -4,7 +4,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 
 def test_benchmark_mode_yes_skips_other_questions():
@@ -89,3 +89,44 @@ def test_append_twice_adds_two_rows(tmp_path):
         append_benchmark_result(m2)
     content = Path(bm_file).read_text(encoding='utf-8')
     assert content.count('stock_modelv1') == 2
+
+
+def _fake_backtest_return():
+    results_list = [
+        {'horizon': 1, 'forecast': 263.1, 'real': 261.8,
+         'error': 1.3, 'error_pct': 0.50, 'in_ci': True,
+         'lower_ci': 258.0, 'upper_ci': 268.0},
+        {'horizon': 2, 'forecast': 264.0, 'real': 263.2,
+         'error': 0.8, 'error_pct': 0.30, 'in_ci': True,
+         'lower_ci': 259.0, 'upper_ci': 269.0},
+        {'horizon': 3, 'forecast': 262.5, 'real': 260.1,
+         'error': 2.4, 'error_pct': 0.92, 'in_ci': False,
+         'lower_ci': 256.0, 'upper_ci': 265.0},
+    ]
+    forecasts = {1: [263.1], 2: [264.0], 3: [262.5]}
+    forecast_dates = ['2024-10-15', '2024-10-16', '2024-10-17']
+    confidence_intervals = {}
+    all_results = {
+        1: (None, None, None, None, None, None, 4.21, 3.10, 0.91, None, None, None),
+        2: (None, None, None, None, None, None, 5.03, 4.20, 0.88, None, None, None),
+        3: (None, None, None, None, None, None, 6.11, 5.30, 0.84, None, None, None),
+    }
+    return results_list, forecasts, forecast_dates, confidence_intervals, all_results
+
+
+def test_run_benchmark_structure():
+    import pandas as pd
+    fake_data = MagicMock(spec=pd.DataFrame)
+
+    with patch('stock_modelv14.run_backtest', return_value=_fake_backtest_return()):
+        from stock_modelv14 import run_benchmark
+        result = run_benchmark(fake_data)
+
+    assert result['version'] is not None
+    assert set(result['horizons'].keys()) == {1, 2, 3}
+    assert abs(result['avg_rmse'] - (4.21 + 5.03 + 6.11) / 3) < 0.001
+    assert abs(result['avg_mae'] - (3.10 + 4.20 + 5.30) / 3) < 0.001
+    assert abs(result['avg_r2'] - (0.91 + 0.88 + 0.84) / 3) < 0.001
+    assert abs(result['ci_coverage'] - 66.666) < 0.1
+    assert result['horizons'][1]['forecast'] == 263.1
+    assert result['horizons'][3]['in_ci'] is False
