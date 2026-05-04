@@ -888,7 +888,8 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
     future_data['Date_key'] = future_data['Date'].dt.date
     real_prices_dict = dict(zip(future_data['Date_key'], future_data['Close']))
     
-    logger.info(f"\nAvailable real data dates: {list(real_prices_dict.keys())}")
+    _dates = list(real_prices_dict.keys())
+    logger.info(f"\nAvailable real data dates: {len(_dates)} дат, первая {_dates[0]}, последняя {_dates[-1]}" if _dates else "\nAvailable real data dates: пусто")
     
     for horizon in [1, 2, 3]:
         if horizon - 1 >= len(forecast_dates):
