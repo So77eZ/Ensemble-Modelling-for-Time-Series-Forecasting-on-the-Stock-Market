@@ -952,7 +952,7 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
         logger.error("No backtest results generated - no matching dates found")
         return None
     
-    return backtest_results, forecasts, forecast_dates, confidence_intervals
+    return backtest_results, forecasts, forecast_dates, confidence_intervals, all_results
 
 # ============================================================================
 # USER INTERACTION
@@ -1220,7 +1220,7 @@ if __name__ == '__main__':
         backtest_results = run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params, ci_mode=ci_mode)
 
         if backtest_results and backtest_results[0]:
-            results_list, forecasts, forecast_dates, confidence_intervals = backtest_results
+            results_list, forecasts, forecast_dates, confidence_intervals, _ = backtest_results
             print("\n" + "="*60)
             print("BACKTEST RESULTS SUMMARY")
             print("="*60)
