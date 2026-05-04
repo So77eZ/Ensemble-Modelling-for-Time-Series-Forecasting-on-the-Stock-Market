@@ -963,7 +963,25 @@ def get_user_inputs():
     print("\n" + "="*60)
     print("STOCK PRICE FORECASTING MODEL v14")
     print("="*60)
-    
+
+    # 0. Benchmark mode
+    print("\n0. Режим бенчмарка (воспроизводимый прогон для отслеживания качества модели)?")
+    print("   1 — Нет (по умолчанию)")
+    print("   2 — Да")
+    bm_choice = input("Ваш выбор [1/2, по умолчанию 1]: ").strip() or "1"
+    if bm_choice == "2":
+        print("\nПАРАМЕТРЫ БЕНЧМАРКА:")
+        print(f"  Тикер:           {BENCHMARK_TICKER}")
+        print(f"  Дата бэктеста:   {BENCHMARK_DATE}")
+        print(f"  CI-режим:        {BENCHMARK_CI_MODE} (5/95, вся история)")
+        print(f"  Гиперпараметры:  дефолтные из config.py")
+        print(f"  Примерное время: {BENCHMARK_APPROX_TIME}")
+        confirm = input("\nПродолжить? [y/n, по умолчанию y]: ").strip().lower()
+        if confirm == 'n':
+            print("Выход из программы.")
+            exit(0)
+        return {'benchmark_mode': True}
+
     # 1. Тикер
     ticker_input = input(
         "\n1. Введите тикер (например: SBER, LKOH, GAZP) "
@@ -1063,6 +1081,7 @@ def get_user_inputs():
         'ci_mode': ci_mode,
         'presentation_mode': presentation_mode,
         'history_window': history_window,
+        'benchmark_mode': False,
     }
 
 # ============================================================================
