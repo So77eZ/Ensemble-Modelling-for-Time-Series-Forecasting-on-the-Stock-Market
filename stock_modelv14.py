@@ -96,6 +96,7 @@ BENCHMARK_TICKER      = 'SBER'
 BENCHMARK_DATE        = '2024-10-14'
 BENCHMARK_CI_MODE     = 'wide'
 BENCHMARK_APPROX_TIME = '5–10 минут'
+BENCHMARK_START_DATE  = '2014-01-01'
 BENCHMARKS_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'benchmarks.md')
 
 # ============================================================================
@@ -1239,7 +1240,7 @@ if __name__ == '__main__':
     benchmark_mode = user_params.get('benchmark_mode', False)
 
     if benchmark_mode:
-        start_date = '2014-01-01'
+        start_date = BENCHMARK_START_DATE
         end_date   = datetime.now().strftime('%Y-%m-%d')
         logger.info(f"Loading data for benchmark: {BENCHMARK_TICKER} {start_date}–{end_date}")
         bm_data = load_stock_data_moex_test(BENCHMARK_TICKER, start_date, end_date)
