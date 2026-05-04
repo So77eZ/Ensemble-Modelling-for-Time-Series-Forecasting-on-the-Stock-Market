@@ -1228,15 +1228,6 @@ if __name__ == '__main__':
         # Interactive mode
         user_params = get_user_inputs()
 
-    ticker = user_params['ticker']
-    backtest_mode = user_params['backtest_mode']
-    backtest_date = user_params['backtest_date']
-    optimize = user_params['optimize']
-    n_trials = user_params['n_trials']
-    show_ci = user_params['show_ci']
-    show_plot = user_params['show_plot']
-    ci_mode = user_params.get('ci_mode', 'wide')
-
     benchmark_mode = user_params.get('benchmark_mode', False)
 
     if benchmark_mode:
@@ -1267,6 +1258,15 @@ if __name__ == '__main__':
         print(f"\nРезультаты записаны: {out_path}")
         print("=" * 60)
         exit(0)
+
+    ticker = user_params['ticker']
+    backtest_mode = user_params['backtest_mode']
+    backtest_date = user_params['backtest_date']
+    optimize = user_params['optimize']
+    n_trials = user_params['n_trials']
+    show_ci = user_params['show_ci']
+    show_plot = user_params['show_plot']
+    ci_mode = user_params.get('ci_mode', 'wide')
 
     # Определяем даты загрузки данных
     start_date = '2014-01-01'
