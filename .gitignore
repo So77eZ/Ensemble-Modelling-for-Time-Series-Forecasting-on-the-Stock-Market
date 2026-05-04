@@ -31,3 +31,6 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# oldChangelog - старый файл с изменениями, который не нужен в репозитории 
+oldCHANGELOG.md

@@ -8,5 +8,7 @@
     "python.analysis.ignore": [
         "**/tensorflow/**",
         "**/keras/**"
-    ]
+    ],
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.typeCheckingMode": "off"
 }
