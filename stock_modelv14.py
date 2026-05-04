@@ -47,6 +47,8 @@ from tensorflow.keras.optimizers import Adam
 # CONFIGURATION & LOGGING SETUP
 # ============================================================================
 
+from presentation_output import plot_presentation
+
 from config import (
     LSTM_LOOK_BACK, LSTM_EPOCHS, LSTM_PATIENCE, LSTM_BATCH_SIZE,
     LSTM_LEARNING_RATE, LSTM_DROPOUT_RATE, LSTM_UNITS,
@@ -85,6 +87,16 @@ logger.info(f"TensorFlow: {tf.__version__}")
 logger.info(f"GPU Available: {tf.config.list_physical_devices('GPU')}")
 logger.info(f"XGBoost Available: {XGBOOST_AVAILABLE}")
 logger.info("=" * 60)
+
+# ============================================================================
+# BENCHMARK CONFIGURATION
+# ============================================================================
+
+BENCHMARK_TICKER      = 'SBER'
+BENCHMARK_DATE        = '2024-10-14'
+BENCHMARK_CI_MODE     = 'wide'
+BENCHMARK_APPROX_TIME = '5–10 минут'
+BENCHMARKS_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'benchmarks.md')
 
 # ============================================================================
 # HYPERPARAMETERS MANAGEMENT
@@ -1009,6 +1021,18 @@ def get_user_inputs():
     ci_mode_input = input("   Режим CI (1/2, по умолчанию 1): ").strip()
     ci_mode = 'narrow' if ci_mode_input == '2' else 'wide'
 
+    print("\n6. Презентационный режим (дополнительный график для слайдов)?")
+    print("   1 — Нет (по умолчанию)")
+    print("   2 — Да, построить упрощённый график для презентации")
+    choice = input("Ваш выбор [1/2, по умолчанию 1]: ").strip() or "1"
+    presentation_mode = (choice == "2")
+
+    if presentation_mode:
+        raw = input("   Окно истории на графике, торговых дней [по умолчанию 90]: ").strip()
+        history_window = int(raw) if raw.isdigit() else 90
+    else:
+        history_window = 90
+
     print("\n" + "="*60)
     print("ПАРАМЕТРЫ ЗАПУСКА:")
     print(f"  Тикер: {ticker}")
@@ -1020,13 +1044,14 @@ def get_user_inputs():
     print(f"  Показать график: {'Да' if show_plot else 'Нет'}")
     ci_label = 'Узкий (25/75, последние 3 года)' if ci_mode == 'narrow' else 'Широкий (5/95, вся история)'
     print(f"  Режим CI: {ci_label}")
+    print(f"  Презентационный режим: {'Да (окно ' + str(history_window) + ' дней)' if presentation_mode else 'Нет'}")
     print("="*60)
-    
+
     confirm = input("\nПродолжить с этими параметрами? (y/n, по умолчанию y): ").strip().lower()
     if confirm == 'n':
         print("Выход из программы.")
         exit(0)
-    
+
     return {
         'ticker': ticker,
         'backtest_mode': backtest_mode,
@@ -1035,7 +1060,9 @@ def get_user_inputs():
         'n_trials': n_trials,
         'show_ci': show_ci,
         'show_plot': show_plot,
-        'ci_mode': ci_mode
+        'ci_mode': ci_mode,
+        'presentation_mode': presentation_mode,
+        'history_window': history_window,
     }
 
 # ============================================================================
@@ -1053,6 +1080,10 @@ if __name__ == '__main__':
     parser.add_argument('--trials', type=int, default=20, help='Optuna trials')
     parser.add_argument('--ci-mode', choices=['wide', 'narrow'], default='wide',
                         help='CI mode: wide=5/95 full history, narrow=25/75 last 3y')
+    parser.add_argument('--presentation', action='store_true',
+                        help='Построить дополнительный график в презентационном стиле')
+    parser.add_argument('--history-window', type=int, default=90,
+                        help='Окно истории для презентационного графика, торговых дней (по умолчанию 90)')
     args = parser.parse_args()
 
     if args.no_gui:
@@ -1074,7 +1105,9 @@ if __name__ == '__main__':
             'n_trials': args.trials,
             'show_ci': False,
             'show_plot': not args.no_gui,
-            'ci_mode': args.ci_mode
+            'ci_mode': args.ci_mode,
+            'presentation_mode': args.presentation,
+            'history_window': args.history_window,
         }
     else:
         # Interactive mode
@@ -1365,6 +1398,22 @@ if __name__ == '__main__':
                 plt.show()
             else:
                 plt.close()
+
+            if user_params.get('presentation_mode'):
+                pres_path = plot_presentation(
+                    history_dates=data['Date'],
+                    history_prices=data['Close'],
+                    forecast_dates=cum_forecast_dates,
+                    forecast_values=cum_forecast_prices,
+                    ci_lower=[confidence_intervals[h][0][-1] for h in [1, 2, 3]],
+                    ci_upper=[confidence_intervals[h][1][-1] for h in [1, 2, 3]],
+                    ticker=ticker,
+                    output_dir=graphs_dir,
+                    history_window=user_params.get('history_window', 90),
+                    timestamp=timestamp_str,
+                )
+                print(f"\nПрезентационный график сохранён: {pres_path}")
+                logger.info(f"[OK] Presentation graph saved: {pres_path}")
 
             log_filename = f'{ticker}_forecast_v14_{timestamp_str}.txt'
             log_path = os.path.join(logs_dir, log_filename)
