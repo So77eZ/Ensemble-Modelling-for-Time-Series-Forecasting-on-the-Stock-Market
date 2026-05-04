@@ -955,6 +955,54 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
     return backtest_results, forecasts, forecast_dates, confidence_intervals, all_results
 
 # ============================================================================
+# BENCHMARK RUNNER
+# ============================================================================
+
+_BENCHMARKS_HEADER = """\
+# Benchmarks — SBER, 2024-10-14
+
+## Методология
+
+- Тикер и дата зафиксированы, не меняются между версиями.
+- Гиперпараметры: дефолтные из `config.py` (не Optuna).
+  Причина: бенчмарк измеряет качество кода, а не подбора параметров.
+  Optuna-параметры меняются между прогонами и делают сравнение версий
+  непрозрачным; дефолты воспроизводимы без предварительной оптимизации.
+- CI-режим: wide (5/95, полная история).
+
+## Результаты
+
+| Версия | Дата запуска | RMSE h1/h2/h3 | avg RMSE | MAE h1/h2/h3 | avg MAE | R² h1/h2/h3 | avg R² | Прогноз h1/h2/h3 | Реал h1/h2/h3 | Ошибка% h1/h2/h3 | avg Ошибка% | CI coverage |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+"""
+
+
+def append_benchmark_result(metrics: dict):
+    from pathlib import Path as _Path
+    path = _Path(BENCHMARKS_FILE)
+    if not path.exists():
+        path.write_text(_BENCHMARKS_HEADER, encoding='utf-8')
+    h = metrics['horizons']
+    row = (
+        f"| {metrics['version']} "
+        f"| {metrics['run_at']} "
+        f"| {h[1]['rmse']:.2f}/{h[2]['rmse']:.2f}/{h[3]['rmse']:.2f} "
+        f"| {metrics['avg_rmse']:.2f} "
+        f"| {h[1]['mae']:.2f}/{h[2]['mae']:.2f}/{h[3]['mae']:.2f} "
+        f"| {metrics['avg_mae']:.2f} "
+        f"| {h[1]['r2']:.3f}/{h[2]['r2']:.3f}/{h[3]['r2']:.3f} "
+        f"| {metrics['avg_r2']:.3f} "
+        f"| {h[1]['forecast']:.1f}/{h[2]['forecast']:.1f}/{h[3]['forecast']:.1f} "
+        f"| {h[1]['real']:.1f}/{h[2]['real']:.1f}/{h[3]['real']:.1f} "
+        f"| {h[1]['error_pct']:.1f}%/{h[2]['error_pct']:.1f}%/{h[3]['error_pct']:.1f}% "
+        f"| {metrics['avg_error_pct']:.1f}% "
+        f"| {round(metrics['ci_coverage']):.0f}% |\n"
+    )
+    with open(path, 'a', encoding='utf-8') as f:
+        f.write(row)
+    return path
+
+# ============================================================================
 # USER INTERACTION
 # ============================================================================
 
