@@ -175,6 +175,44 @@ def merge_horizon_results(all_results: dict):
     confidence_intervals = {h: all_results[h][5][h] for h in all_results}
     return forecasts, confidence_intervals
 
+def _train_quantile_pair(
+    meta_features: np.ndarray,
+    residuals: np.ndarray,
+    lower_alpha: float,
+    upper_alpha: float,
+    base_params: dict,
+) -> tuple:
+    """Обучает пару квантильных XGBoost-моделей для границ CI.
+
+    Обе модели обучаются на одной выборке (meta_features, residuals).
+    Различие достигается параметром quantile_alpha: pinball-loss
+    с разными значениями alpha извлекает разные перцентили условного
+    распределения остатков.
+
+    Parameters
+    ----------
+    meta_features : np.ndarray
+        Признаки уровня 1 (объединённые предсказания LSTM и XGBoost
+        с тестовых окон walk-forward).
+    residuals : np.ndarray
+        OOS-остатки (actual - meta_pred) с тех же тестовых окон.
+    lower_alpha, upper_alpha : float
+        Перцентили для нижней и верхней границы интервала
+        (например, 0.05 и 0.95 для 90% CI).
+    base_params : dict
+        Базовые гиперпараметры XGBoost (берутся от мета-учителя).
+
+    Returns
+    -------
+    tuple[xgb.XGBRegressor, xgb.XGBRegressor]
+        Обученные модели для нижней и верхней границы.
+    """
+    common = {**base_params, 'objective': 'reg:quantileerror'}
+    lower_model = xgb.XGBRegressor(**{**common, 'quantile_alpha': lower_alpha})
+    upper_model = xgb.XGBRegressor(**{**common, 'quantile_alpha': upper_alpha})
+    lower_model.fit(meta_features, residuals)
+    upper_model.fit(meta_features, residuals)
+    return lower_model, upper_model
 
 def _get_ci_params(ci_mode: str, X_train: np.ndarray, y_train: np.ndarray):
     """
@@ -759,15 +797,25 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     logger.info("Training CI quantile models on OOS residuals...")
     oos_meta = np.vstack(oos_meta_list)
     oos_residuals = np.concatenate(oos_residuals_list)
-    meta_q_oos, res_q, lower_alpha, upper_alpha = _get_ci_params(ci_mode, oos_meta, oos_residuals)
-    best_lower_model = xgb.XGBRegressor(
-        **{**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': lower_alpha}
+
+    # Центрирование остатков: вычитаем медианный bias, чтобы CI отражал
+    # разброс ошибок, а не их систематическое направление. Без этого
+    # при наличии bias на калибровочной выборке точечный прогноз может
+    # оказаться вне доверительного интервала.
+    residual_bias = float(np.median(oos_residuals))
+    oos_residuals_centered = oos_residuals - residual_bias
+    logger.info(f"Residual bias (median): {residual_bias:.6f}")
+
+    meta_q_oos, res_q, lower_alpha, upper_alpha = _get_ci_params(
+        ci_mode, oos_meta, oos_residuals_centered
     )
-    best_upper_model = xgb.XGBRegressor(
-        **{**meta_params, 'objective': 'reg:quantileerror', 'quantile_alpha': upper_alpha}
+    best_lower_model, best_upper_model = _train_quantile_pair(
+        meta_features=meta_q_oos,
+        residuals=res_q,
+        lower_alpha=lower_alpha,
+        upper_alpha=upper_alpha,
+        base_params=meta_params,
     )
-    best_lower_model.fit(meta_q_oos, res_q)
-    best_upper_model.fit(meta_q_oos, res_q)
     logger.info("✓ CI quantile models trained")
 
     best_model, best_xgb_model, best_meta_learner = models[-1]
