@@ -1236,6 +1236,37 @@ if __name__ == '__main__':
     show_plot = user_params['show_plot']
     ci_mode = user_params.get('ci_mode', 'wide')
 
+    benchmark_mode = user_params.get('benchmark_mode', False)
+
+    if benchmark_mode:
+        start_date = '2014-01-01'
+        end_date   = datetime.now().strftime('%Y-%m-%d')
+        logger.info(f"Loading data for benchmark: {BENCHMARK_TICKER} {start_date}–{end_date}")
+        bm_data = load_stock_data_moex_test(BENCHMARK_TICKER, start_date, end_date)
+        if bm_data is None or bm_data.empty:
+            print(f"Не удалось загрузить данные для бенчмарка ({BENCHMARK_TICKER}).")
+            exit(1)
+
+        metrics = run_benchmark(bm_data)
+        out_path = append_benchmark_result(metrics)
+
+        print("\n" + "=" * 60)
+        print(f"BENCHMARK RESULTS — {metrics['version']}")
+        print("=" * 60)
+        for h in [1, 2, 3]:
+            hd = metrics['horizons'][h]
+            ci_mark = "✓" if hd['in_ci'] else "✗"
+            print(f"  h={h}: прогноз {hd['forecast']:.2f} / реал {hd['real']:.2f} "
+                  f"/ ошибка {hd['error_pct']:.2f}% / CI {ci_mark}")
+        print(f"  avg RMSE: {metrics['avg_rmse']:.2f} | "
+              f"avg MAE: {metrics['avg_mae']:.2f} | "
+              f"avg R²: {metrics['avg_r2']:.3f} | "
+              f"avg Ошибка%: {metrics['avg_error_pct']:.2f}%")
+        print(f"  CI coverage: {metrics['ci_coverage']:.0f}%")
+        print(f"\nРезультаты записаны: {out_path}")
+        print("=" * 60)
+        exit(0)
+
     # Определяем даты загрузки данных
     start_date = '2014-01-01'
     if backtest_mode:
