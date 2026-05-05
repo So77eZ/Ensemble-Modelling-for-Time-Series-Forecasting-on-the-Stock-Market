@@ -48,6 +48,9 @@ from tensorflow.keras.optimizers import Adam
 # ============================================================================
 
 from presentation_output import plot_presentation
+from macro_loader import load_macro_data
+
+_MACRO_COLS = ['usd_rub_hist', 'cbr_rate', 'brent_price']
 
 from config import (
     LSTM_LOOK_BACK, LSTM_EPOCHS, LSTM_PATIENCE, LSTM_BATCH_SIZE,
@@ -608,10 +611,18 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     for key, value in tinkoff_funds.items():
         data[key] = value
 
+    # Макроэкономические time-varying признаки
+    macro_start = data['Date'].min().strftime('%Y-%m-%d')
+    logger.info("Loading macro data (USD/RUB history, CBR key rate, Brent)...")
+    macro_data = load_macro_data(macro_start, end_date)
+    data['Date'] = pd.to_datetime(data['Date']).dt.normalize()
+    data = data.merge(macro_data, on='Date', how='left')
+    data = data.ffill().bfill()
+
     data = data.infer_objects(copy=False).fillna(0)
 
     # Гарантируем наличие фундаментальных колонок (если Tinkoff API недоступен)
-    for col in ['market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'value_usd', 'beta']:
+    for col in ['market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'beta']:
         if col not in data.columns:
             data[col] = 0.0
 
@@ -626,13 +637,10 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         # --- Скользящая волатильность и momentum доходностей ---
         'Vol_Return_5', 'Vol_Return_10', 'Vol_Return_20',
         'Return_MA_5', 'Return_MA_10',
-        # --- Фундаментальные (активные, загружаются из Tinkoff Invest API) ---
-        'market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'value_usd', 'beta',
-        # --- Фундаментальные (отключены: нет источника данных, значения = 0) ---
-        # TODO: подключить financemarker.ru API для заполнения этих признаков
-        # 'roa', 'debt_equity', 'current_ratio', 'gross_profit_margin',
-        # 'eps_growth', 'sales_growth', 'operating_margin', 'net_profit_margin',
-        # 'ps_ratio', 'price_cash_flow',
+        # --- Фундаментальные (snapshot из Tinkoff Invest API) ---
+        'market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'beta',
+        # --- Макроэкономические (time-varying, загружаются из macro_loader) ---
+        *[c for c in _MACRO_COLS if c in data.columns and not data[c].isna().all()],
     ]
     data = data[['Date'] + features].dropna()
     
@@ -1355,7 +1363,7 @@ if __name__ == '__main__':
 
         data_for_opt = data_for_opt.infer_objects(copy=False).fillna(0)
 
-        for col in ['market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'value_usd', 'beta']:
+        for col in ['market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'beta']:
             if col not in data_for_opt.columns:
                 data_for_opt[col] = 0.0
 
@@ -1365,13 +1373,10 @@ if __name__ == '__main__':
             'BB_Middle', 'BB_Upper', 'BB_Lower', 'BB_Width',
             'ATR_14', 'Stoch_K', 'Stoch_D', 'ADX_14', 'Momentum_10',
             'Price_Change_1', 'Price_Change_5',
-            # --- Фундаментальные (активные, загружаются из Tinkoff Invest API) ---
-            'market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'value_usd', 'beta',
-            # --- Фундаментальные (отключены: нет источника данных, значения = 0) ---
-            # TODO: подключить financemarker.ru API для заполнения этих признаков
-            # 'roa', 'debt_equity', 'current_ratio', 'gross_profit_margin',
-            # 'eps_growth', 'sales_growth', 'operating_margin', 'net_profit_margin',
-            # 'ps_ratio', 'price_cash_flow',
+            # --- Фундаментальные (snapshot из Tinkoff Invest API) ---
+            'market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'beta',
+            # --- Макроэкономические (time-varying) ---
+            *[c for c in _MACRO_COLS if c in data_for_opt.columns and not data_for_opt[c].isna().all()],
         ]
         
         # В режиме бэктеста оптимизируем только на данных до backtest_date
