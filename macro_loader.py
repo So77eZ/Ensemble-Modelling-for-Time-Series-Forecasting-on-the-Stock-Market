@@ -93,10 +93,12 @@ def _load_moex_brent(start: str, end: str) -> pd.Series:
                 if rows:
                     ci = cols.index('CLOSE')
                     di = cols.index('TRADEDATE')
-                    all_frames.append(pd.DataFrame({
-                        'Date':         pd.to_datetime([r[di] for r in rows]),
-                        'brent_price':  [float(r[ci]) for r in rows if r[ci] is not None],
-                    }))
+                    filtered = [r for r in rows if r[ci] is not None]
+                    if filtered:
+                        all_frames.append(pd.DataFrame({
+                            'Date':        pd.to_datetime([r[di] for r in filtered]),
+                            'brent_price': [float(r[ci]) for r in filtered],
+                        }))
         except Exception:
             pass
 
