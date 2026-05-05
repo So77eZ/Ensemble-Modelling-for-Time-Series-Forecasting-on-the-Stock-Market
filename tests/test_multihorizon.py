@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from stock_modelv14 import merge_horizon_results, _forecast_dates_for_horizon
+from stock_modelv15 import merge_horizon_results, _forecast_dates_for_horizon
 
 
 def _build_sequences(close_vals, look_back, horizon):

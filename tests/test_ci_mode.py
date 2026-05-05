@@ -1,7 +1,7 @@
 import sys, os
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from stock_modelv14 import _get_ci_params
+from stock_modelv15 import _get_ci_params
 
 def _make_data(n):
     X = np.arange(n * 5, dtype=float).reshape(n, 5)

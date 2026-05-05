@@ -10,7 +10,7 @@ from unittest.mock import patch, MagicMock
 def test_benchmark_mode_yes_skips_other_questions():
     """При ответе '2' на вопрос 0 возвращается benchmark_mode=True без других вопросов."""
     with patch('builtins.input', side_effect=['2', 'y']):
-        from stock_modelv14 import get_user_inputs
+        from stock_modelv15 import get_user_inputs
         result = get_user_inputs()
     assert result['benchmark_mode'] is True
 
@@ -30,8 +30,8 @@ def test_benchmark_mode_no_returns_false():
     ]
     # load_hyperparams мокируем → (None, None), чтобы убрать условную ветку
     with patch('builtins.input', side_effect=answers), \
-         patch('stock_modelv14.load_hyperparams', return_value=(None, None)):
-        from stock_modelv14 import get_user_inputs
+         patch('stock_modelv15.load_hyperparams', return_value=(None, None)):
+        from stock_modelv15 import get_user_inputs
         result = get_user_inputs()
     assert result['benchmark_mode'] is False
     assert result['ticker'] == 'SBER'
@@ -39,7 +39,7 @@ def test_benchmark_mode_no_returns_false():
 
 def _sample_metrics():
     return {
-        'version': 'stock_modelv14',
+        'version': 'stock_modelv15',
         'run_at': '2026-05-04 14:00',
         'horizons': {
             1: {'forecast': 263.1, 'real': 261.8, 'error_pct': 0.50,
@@ -56,8 +56,8 @@ def _sample_metrics():
 
 def test_append_creates_file_with_header(tmp_path):
     bm_file = str(tmp_path / 'benchmarks.md')
-    with patch('stock_modelv14.BENCHMARKS_FILE', bm_file):
-        from stock_modelv14 import append_benchmark_result
+    with patch('stock_modelv15.BENCHMARKS_FILE', bm_file):
+        from stock_modelv15 import append_benchmark_result
         append_benchmark_result(_sample_metrics())
     content = Path(bm_file).read_text(encoding='utf-8')
     assert '# Benchmarks' in content
@@ -67,11 +67,11 @@ def test_append_creates_file_with_header(tmp_path):
 
 def test_append_writes_row_with_metrics(tmp_path):
     bm_file = str(tmp_path / 'benchmarks.md')
-    with patch('stock_modelv14.BENCHMARKS_FILE', bm_file):
-        from stock_modelv14 import append_benchmark_result
+    with patch('stock_modelv15.BENCHMARKS_FILE', bm_file):
+        from stock_modelv15 import append_benchmark_result
         append_benchmark_result(_sample_metrics())
     content = Path(bm_file).read_text(encoding='utf-8')
-    assert 'stock_modelv14' in content
+    assert 'stock_modelv15' in content
     assert '4.21/5.03/6.11' in content
     assert '263.1/264.0/262.5' in content
     assert '261.8/263.2/260.1' in content
@@ -83,8 +83,8 @@ def test_append_twice_adds_two_rows(tmp_path):
     m1 = _sample_metrics()
     m2 = _sample_metrics()
     m2['version'] = 'stock_modelv15'
-    with patch('stock_modelv14.BENCHMARKS_FILE', bm_file):
-        from stock_modelv14 import append_benchmark_result
+    with patch('stock_modelv15.BENCHMARKS_FILE', bm_file):
+        from stock_modelv15 import append_benchmark_result
         append_benchmark_result(m1)
         append_benchmark_result(m2)
     content = Path(bm_file).read_text(encoding='utf-8')
@@ -118,8 +118,8 @@ def test_run_benchmark_structure():
     import pandas as pd
     fake_data = MagicMock(spec=pd.DataFrame)
 
-    with patch('stock_modelv14.run_backtest', return_value=_fake_backtest_return()):
-        from stock_modelv14 import run_benchmark
+    with patch('stock_modelv15.run_backtest', return_value=_fake_backtest_return()):
+        from stock_modelv15 import run_benchmark
         result = run_benchmark(fake_data)
 
     assert result['version'] is not None
