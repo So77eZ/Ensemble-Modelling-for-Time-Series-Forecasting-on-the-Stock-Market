@@ -642,6 +642,21 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         # --- Макроэкономические (time-varying, загружаются из macro_loader) ---
         *[c for c in _MACRO_COLS if c in data.columns and not data[c].isna().all()],
     ]
+
+    # Granger-скрининг: убираем макропризнаки, не предсказывающие Close (p >= 0.05)
+    from statsmodels.tsa.stattools import grangercausalitytests as _gct
+    for _mc in [c for c in _MACRO_COLS if c in features]:
+        try:
+            _gr = _gct(data[['Close', _mc]].dropna(), maxlag=5, verbose=False)
+            _p  = min(r[0]['ssr_ftest'][1] for r in _gr.values())
+            if _p >= 0.05:
+                features.remove(_mc)
+                logger.info(f"Granger screening: {_mc} excluded (p={_p:.3f})")
+            else:
+                logger.info(f"Granger screening: {_mc} retained (p={_p:.3f})")
+        except Exception as e:
+            logger.warning(f"Granger screening: {_mc} error ({e}), keeping feature")
+
     data = data[['Date'] + features].dropna()
     
     # В режиме бэктеста обрезаем данные до указанной даты
@@ -1405,12 +1420,23 @@ if __name__ == '__main__':
             # --- Макроэкономические (time-varying) ---
             *[c for c in _MACRO_COLS if c in data_for_opt.columns and not data_for_opt[c].isna().all()],
         ]
-        
+
+        # Granger-скрининг для Optuna: те же правила, что и в основной ветке
+        from statsmodels.tsa.stattools import grangercausalitytests as _gct
+        for _mc in [c for c in _MACRO_COLS if c in features]:
+            try:
+                _gr = _gct(data_for_opt[['Close', _mc]].dropna(), maxlag=5, verbose=False)
+                _p  = min(r[0]['ssr_ftest'][1] for r in _gr.values())
+                if _p >= 0.05:
+                    features.remove(_mc)
+            except Exception:
+                pass
+
         # В режиме бэктеста оптимизируем только на данных до backtest_date
         if backtest_mode:
             backtest_dt = pd.to_datetime(backtest_date)
             data_for_opt = data_for_opt[data_for_opt['Date'] <= backtest_dt]
-        
+
         data_for_opt = data_for_opt[['Date'] + features].dropna()
 
         scaler_opt = MinMaxScaler()
