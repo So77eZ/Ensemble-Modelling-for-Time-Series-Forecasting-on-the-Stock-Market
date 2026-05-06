@@ -15,6 +15,9 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 import json
+import contextlib
+import io
+import random
 import matplotlib
 import argparse
 
@@ -42,6 +45,11 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.optimizers import Adam
+
+RANDOM_SEED = 42
+random.seed(RANDOM_SEED)
+np.random.seed(RANDOM_SEED)
+tf.random.set_seed(RANDOM_SEED)
 
 # ============================================================================
 # CONFIGURATION & LOGGING SETUP
@@ -648,7 +656,8 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     from statsmodels.tsa.stattools import grangercausalitytests as _gct
     for _mc in [c for c in _MACRO_COLS if c in features]:
         try:
-            _gr = _gct(data[['Close', _mc]].dropna(), maxlag=5)
+            with contextlib.redirect_stdout(io.StringIO()):
+                _gr = _gct(data[['Close', _mc]].dropna(), maxlag=5)
             _p  = min(r[0]['ssr_ftest'][1] for r in _gr.values())
             if _p >= 0.05:
                 features.remove(_mc)
@@ -771,7 +780,8 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         print("Granger causality (top-15 features -> Close, maxlag=5):")
         for feat in top15:
             try:
-                result = grangercausalitytests(data[['Close', feat]].dropna(), maxlag=5)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = grangercausalitytests(data[['Close', feat]].dropna(), maxlag=5)
                 min_pval = min(res[0]['ssr_ftest'][1] for res in result.values())
                 gc_flag = "[ok]" if min_pval < 0.05 else "[no]"
                 msg = f"  Close <- {feat:<22}: p={min_pval:.3f} {gc_flag}"
@@ -944,6 +954,7 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
     backtest_dt = pd.to_datetime(backtest_date)
     available_data = data[data['Date'] <= backtest_dt]
     future_data = data[data['Date'] > backtest_dt].copy()
+    base_price = float(available_data['Close'].iloc[-1]) if not available_data.empty else None
     
     if future_data.empty:
         logger.error(f"No future data available after {backtest_date}")
@@ -1028,7 +1039,10 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
         error = abs(forecast_price - real_price)
         error_pct = (error / real_price) * 100
         in_ci = lower_ci <= real_price <= upper_ci
-        
+        forecast_dir = 'up' if (base_price is None or forecast_price >= base_price) else 'down'
+        real_dir     = 'up' if (base_price is None or real_price     >= base_price) else 'down'
+        dir_correct  = forecast_dir == real_dir
+
         backtest_results.append({
             'horizon': horizon,
             'forecast_date': forecast_date,
@@ -1039,7 +1053,10 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
             'error_pct': error_pct,
             'lower_ci': lower_ci,
             'upper_ci': upper_ci,
-            'in_ci': in_ci
+            'in_ci': in_ci,
+            'forecast_dir': forecast_dir,
+            'real_dir': real_dir,
+            'dir_correct': dir_correct,
         })
         
         logger.info(f"  Forecast date: {forecast_date.strftime('%Y-%m-%d')}")
@@ -1049,6 +1066,7 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
         logger.info(f"  Error: {error:.2f} RUB ({error_pct:.2f}%)")
         logger.info(f"  CI: [{lower_ci:.2f}, {upper_ci:.2f}]")
         logger.info(f"  Real price in CI: {'✓ YES' if in_ci else '✗ NO'}")
+        logger.info(f"  Direction: forecast={forecast_dir}, real={real_dir} {'[ok]' if dir_correct else '[no]'}")
     
     if not backtest_results:
         logger.error("No backtest results generated - no matching dates found")
@@ -1431,7 +1449,8 @@ if __name__ == '__main__':
         from statsmodels.tsa.stattools import grangercausalitytests as _gct
         for _mc in [c for c in _MACRO_COLS if c in features]:
             try:
-                _gr = _gct(data_for_opt[['Close', _mc]].dropna(), maxlag=5)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    _gr = _gct(data_for_opt[['Close', _mc]].dropna(), maxlag=5)
                 _p  = min(r[0]['ssr_ftest'][1] for r in _gr.values())
                 if _p >= 0.05:
                     features.remove(_mc)
@@ -1495,14 +1514,18 @@ if __name__ == '__main__':
                 print(f"  Error:        {res['error']:.2f} RUB ({res['error_pct']:.2f}%)")
                 print(f"  CI:           [{res['lower_ci']:.2f}, {res['upper_ci']:.2f}]")
                 print(f"  In CI:        {'YES' if res['in_ci'] else 'NO'}")
+                dir_mark = "[ok]" if res['dir_correct'] else "[no]"
+                print(f"  Direction:    {res['forecast_dir']} (real: {res['real_dir']}) {dir_mark}")
 
             avg_error = np.mean([r['error'] for r in results_list])
             avg_error_pct = np.mean([r['error_pct'] for r in results_list])
             ci_coverage = sum([r['in_ci'] for r in results_list]) / len(results_list) * 100
+            dir_accuracy = sum([r['dir_correct'] for r in results_list]) / len(results_list) * 100
 
             print(f"\nAVERAGE METRICS:")
             print(f"  Average Error:  {avg_error:.2f} RUB ({avg_error_pct:.2f}%)")
             print(f"  CI Coverage:    {ci_coverage:.1f}%")
+            print(f"  Direction Accuracy: {dir_accuracy:.1f}%")
             print(f"  Total forecasts checked: {len(results_list)}")
             print("="*60)
 
@@ -1539,9 +1562,12 @@ if __name__ == '__main__':
                     f.write(f"  Error:        {res['error']:.2f} RUB ({res['error_pct']:.2f}%)\n")
                     f.write(f"  CI:           [{res['lower_ci']:.2f}, {res['upper_ci']:.2f}]\n")
                     f.write(f"  In CI:        {'YES' if res['in_ci'] else 'NO'}\n")
+                    dir_mark = "[ok]" if res['dir_correct'] else "[no]"
+                    f.write(f"  Direction:    {res['forecast_dir']} (real: {res['real_dir']}) {dir_mark}\n")
                 f.write(f"\nAVERAGE METRICS:\n")
                 f.write(f"Average Error: {avg_error:.2f} RUB ({avg_error_pct:.2f}%)\n")
                 f.write(f"CI Coverage: {ci_coverage:.1f}%\n")
+                f.write(f"Direction Accuracy: {dir_accuracy:.1f}%\n")
                 f.write(f"Total forecasts checked: {len(results_list)}\n")
 
             logger.info(f"[OK] Backtest results saved: {backtest_log_file}")
