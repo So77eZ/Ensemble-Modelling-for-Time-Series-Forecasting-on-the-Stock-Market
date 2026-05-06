@@ -1331,7 +1331,7 @@ if __name__ == '__main__':
         print("=" * 60)
         for h in [1, 2, 3]:
             hd = metrics['horizons'][h]
-            ci_mark = "✓" if hd['in_ci'] else "✗"
+            ci_mark = "[ok]" if hd['in_ci'] else "[no]"
             print(f"  h={h}: прогноз {hd['forecast']:.2f} / реал {hd['real']:.2f} "
                   f"/ ошибка {hd['error_pct']:.2f}% / CI {ci_mark}")
         print(f"  avg RMSE: {metrics['avg_rmse']:.2f} | "
@@ -1462,7 +1462,7 @@ if __name__ == '__main__':
                 print(f"  Real:         {res['real']:.2f} RUB")
                 print(f"  Error:        {res['error']:.2f} RUB ({res['error_pct']:.2f}%)")
                 print(f"  CI:           [{res['lower_ci']:.2f}, {res['upper_ci']:.2f}]")
-                print(f"  In CI:        {'✓ YES' if res['in_ci'] else '✗ NO'}")
+                print(f"  In CI:        {'YES' if res['in_ci'] else 'NO'}")
 
             avg_error = np.mean([r['error'] for r in results_list])
             avg_error_pct = np.mean([r['error_pct'] for r in results_list])
