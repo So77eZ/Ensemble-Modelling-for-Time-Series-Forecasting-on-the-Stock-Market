@@ -756,7 +756,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         for feat in top15:
             try:
                 result = grangercausalitytests(data[['Close', feat]].dropna(), maxlag=5, verbose=False)
-                min_pval = min(res[1][0][1] for res in result.values())
+                min_pval = min(res[0]['ssr_ftest'][1] for res in result.values())
                 gc_flag = "[ok]" if min_pval < 0.05 else "[no]"
                 msg = f"  Close <- {feat:<22}: p={min_pval:.3f} {gc_flag}"
             except Exception as e:
