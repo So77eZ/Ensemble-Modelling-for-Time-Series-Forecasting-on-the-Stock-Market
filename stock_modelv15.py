@@ -1336,7 +1336,7 @@ if __name__ == '__main__':
                   f"/ ошибка {hd['error_pct']:.2f}% / CI {ci_mark}")
         print(f"  avg RMSE: {metrics['avg_rmse']:.2f} | "
               f"avg MAE: {metrics['avg_mae']:.2f} | "
-              f"avg R²: {metrics['avg_r2']:.3f} | "
+              f"avg R2: {metrics['avg_r2']:.3f} | "
               f"avg Ошибка%: {metrics['avg_error_pct']:.2f}%")
         print(f"  CI coverage: {metrics['ci_coverage']:.0f}%")
         print(f"\nРезультаты записаны: {out_path}")
