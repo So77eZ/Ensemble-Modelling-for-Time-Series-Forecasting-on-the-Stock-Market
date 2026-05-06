@@ -13,6 +13,7 @@ pd.set_option('future.no_silent_downcasting', True)
 
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.linear_model import Ridge
 
 import json
 import contextlib
@@ -711,6 +712,17 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     oos_meta_list: list = []
     oos_residuals_list: list = []
 
+    ci_params = {
+        'n_estimators': META_N_ESTIMATORS,
+        'max_depth': META_MAX_DEPTH,
+        'learning_rate': META_LEARNING_RATE,
+        'subsample': META_SUBSAMPLE,
+        'colsample_bytree': META_COLSAMPLE_BYTREE,
+        'random_state': XGBOOST_RANDOM_STATE,
+        'verbosity': XGBOOST_VERBOSITY,
+        'device': XGBOOST_DEVICE,
+    }
+
     for i, (train_end, test_end) in enumerate(splits, 1):
         logger.info("\n" + "=" * 60)
         logger.info(f"WALK-FORWARD SPLIT {i}/{len(splits)}")
@@ -801,20 +813,10 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
 
         meta_train = np.column_stack((lstm_train_preds, xgb_train_preds))
 
-        logger.info("Training Meta-Learner...")
-        meta_params = {
-            'n_estimators': META_N_ESTIMATORS,
-            'max_depth': META_MAX_DEPTH,
-            'learning_rate': META_LEARNING_RATE,
-            'subsample': META_SUBSAMPLE,
-            'colsample_bytree': META_COLSAMPLE_BYTREE,
-            'random_state': XGBOOST_RANDOM_STATE,
-            'verbosity': XGBOOST_VERBOSITY,
-            'device': XGBOOST_DEVICE
-        }
-        meta_learner = xgb.XGBRegressor(**meta_params)
+        logger.info("Training Meta-Learner (Ridge)...")
+        meta_learner = Ridge(alpha=1.0)
         meta_learner.fit(meta_train, y_train)
-        logger.info("[OK] Meta-Learner trained")
+        logger.info(f"[OK] Meta-Learner trained | LSTM={meta_learner.coef_[0]:.3f}, XGB={meta_learner.coef_[1]:.3f}")
 
         lstm_test_preds = lstm_model.predict(X_test, verbose=0).flatten()
         X_test_flat = X_test.reshape(X_test.shape[0], -1)
@@ -876,7 +878,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         residuals=res_q,
         lower_alpha=lower_alpha,
         upper_alpha=upper_alpha,
-        base_params=meta_params,
+        base_params=ci_params,
     )
     logger.info("✓ CI quantile models trained")
 
