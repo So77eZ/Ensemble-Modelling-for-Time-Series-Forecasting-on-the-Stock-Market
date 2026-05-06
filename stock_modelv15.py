@@ -1279,9 +1279,11 @@ if __name__ == '__main__':
                         help='Построить дополнительный график в презентационном стиле')
     parser.add_argument('--history-window', type=int, default=90,
                         help='Окно истории для презентационного графика, торговых дней (по умолчанию 90)')
+    parser.add_argument('--benchmark', action='store_true',
+                        help=f'Запустить воспроизводимый бенчмарк ({BENCHMARK_TICKER}, дефолтные параметры)')
     args = parser.parse_args()
 
-    if args.no_gui:
+    if args.no_gui or args.benchmark:
         try:
             matplotlib.use('Agg')
         except Exception:
@@ -1290,7 +1292,9 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
 
     # Получаем параметры от пользователя (если не заданы через CLI)
-    if args.ticker:
+    if args.benchmark:
+        user_params = {'benchmark_mode': True}
+    elif args.ticker:
         # CLI mode
         user_params = {
             'ticker': args.ticker.upper(),
