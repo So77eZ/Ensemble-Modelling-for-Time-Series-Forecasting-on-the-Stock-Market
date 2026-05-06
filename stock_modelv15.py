@@ -628,6 +628,23 @@ def optimize_xgboost_params(X_train, y_train, n_trials=20):
     study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
     return study.best_params
 
+
+def optimize_ridge_alpha(meta_features: np.ndarray, y_true: np.ndarray, n_trials: int = 20) -> float:
+    from sklearn.model_selection import cross_val_score
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    def objective(trial):
+        alpha = trial.suggest_float('alpha', 1e-3, 100.0, log=True)
+        scores = cross_val_score(
+            Ridge(alpha=alpha), meta_features, y_true,
+            cv=min(5, len(y_true)), scoring='neg_mean_squared_error'
+        )
+        return float(-scores.mean())
+
+    study = optuna.create_study(direction='minimize')
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    return float(study.best_params['alpha'])
+
 # ============================================================================
 # MODEL TRAINING
 # ============================================================================
@@ -739,6 +756,9 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     models = []
     oos_meta_list: list = []
     oos_residuals_list: list = []
+    oos_y_list: list = []
+    last_meta_train: np.ndarray | None = None
+    last_y_train: np.ndarray | None = None
 
     ci_params = {
         'n_estimators': META_N_ESTIMATORS,
@@ -845,6 +865,8 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         meta_learner = Ridge(alpha=1.0)
         meta_learner.fit(meta_train, y_train)
         logger.info(f"[OK] Meta-Learner trained | LSTM={meta_learner.coef_[0]:.3f}, XGB={meta_learner.coef_[1]:.3f}")
+        last_meta_train = meta_train
+        last_y_train = y_train
 
         lstm_test_preds = lstm_model.predict(X_test, verbose=0).flatten()
         X_test_flat = X_test.reshape(X_test.shape[0], -1)
@@ -855,6 +877,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         # Собираем OOS-остатки для CI (обучение после цикла)
         oos_meta_list.append(meta_test)
         oos_residuals_list.append(y_test - test_preds)
+        oos_y_list.append(y_test)
 
         test_preds_inv = close_scaler.inverse_transform(test_preds.reshape(-1, 1)).flatten()
         y_test_inv = close_scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
@@ -874,6 +897,19 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     avg_mae = np.mean(maes)
     avg_r2 = np.mean(r2s)
     logger.info(f"Average Metrics: RMSE={avg_rmse:.4f}, MAE={avg_mae:.4f}, R2={avg_r2:.4f}")
+
+    # Оптимизация alpha Ridge на накопленных OOS-предсказаниях всех сплитов
+    oos_meta_all = np.vstack(oos_meta_list)
+    oos_y_all = np.concatenate(oos_y_list)
+    logger.info("Optimizing Ridge alpha on OOS predictions (Optuna, 20 trials)...")
+    best_alpha = optimize_ridge_alpha(oos_meta_all, oos_y_all, n_trials=20)
+    logger.info(f"[OK] Best Ridge alpha: {best_alpha:.4f}")
+    if last_meta_train is not None:
+        best_meta = Ridge(alpha=best_alpha)
+        best_meta.fit(last_meta_train, last_y_train)
+        logger.info(f"[OK] Final Ridge retrained | LSTM={best_meta.coef_[0]:.3f}, XGB={best_meta.coef_[1]:.3f}")
+        lstm_m, xgb_m, _ = models[-1]
+        models[-1] = (lstm_m, xgb_m, best_meta)
 
     # CI-модели обучаются на OOS-остатках всех walk-forward сплитов.
     # OOS-остатки (actual − pred на тестовых окнах) честно отражают погрешность
