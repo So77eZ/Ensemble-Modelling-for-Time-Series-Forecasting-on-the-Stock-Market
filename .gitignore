@@ -4,6 +4,7 @@
 
 # Внутренние рабочие документы (планы, спецификации superpowers-агента)
 docs/superpowers/
+docs/specs/
 
 # Артефакты обучения
 outputs/
