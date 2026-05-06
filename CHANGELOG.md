@@ -6,6 +6,16 @@
 
 ---
 
+## [v15.1] — 2026-05-06
+
+### Добавлено
+
+- **Random seed** — `RANDOM_SEED = 42`; `random.seed`, `np.random.seed`, `tf.random.set_seed` устанавливаются сразу после импортов; разброс RMSE 8.57–11.77 между прогонами устранён
+- **Direction Accuracy** — метрика "% правильно предсказанных направлений (вверх/вниз)" относительно последней известной цены на дату бэктеста; добавлена в бэктест-лог, `.txt`-отчёт и benchmark-вывод
+- **Suppress Granger stdout** — все три вызова `grangercausalitytests` обёрнуты в `contextlib.redirect_stdout(io.StringIO())`; таблицы "number of lags / ssr based F test..." больше не попадают в stdout
+
+---
+
 ## [v15] — 2026-05-05 – 2026-05-06
 
 ### Добавлено

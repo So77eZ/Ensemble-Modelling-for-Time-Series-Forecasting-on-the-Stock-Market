@@ -102,6 +102,7 @@ python stock_modelv15.py --ticker SBER --presentation --history-window 90
 - Метрики качества: RMSE, MAE, R²
 - **Тест Льюнга–Бокса** (20 лагов) на OOS-остатках — диагностика автокорреляции; результат в stdout и лог-файле
 - **Тест Грэнжера** на топ-15 признаках по XGBoost feature importance — формальное обоснование выбора фичей
+- Фиксированный `RANDOM_SEED = 42` (`random`, `numpy`, `tensorflow`) — воспроизводимые результаты между прогонами
 
 ### 6. Прогнозирование
 
@@ -114,7 +115,7 @@ python stock_modelv15.py --ticker SBER --presentation --history-window 90
 
 - Обучение на данных до указанной даты
 - Прогноз на 1–3 дня вперёд и сравнение с известными реальными ценами
-- Метрики: абсолютная ошибка (RUB), ошибка в %, покрытие доверительного интервала (CI Coverage)
+- Метрики: абсолютная ошибка (RUB), ошибка в %, CI Coverage, Direction Accuracy (% верно угаданных направлений вверх/вниз)
 
 ## Ключевые навыки
 
@@ -126,6 +127,7 @@ python stock_modelv15.py --ticker SBER --presentation --history-window 90
 - **Feature engineering:** технические индикаторы, фундаментальный анализ
 - **Интеграция API:** MOEX ISS, T-Bank Invest REST API, ЦБ РФ XML API, ЦБ РФ SOAP DailyInfo
 - **Статистическая диагностика:** тест Льюнга–Бокса, тест Грэнджера, Granger pre-screening
+- **Воспроизводимость:** фиксированный `RANDOM_SEED=42` для всех источников случайности (Python, NumPy, TensorFlow)
 
 ## Инструментарий
 
