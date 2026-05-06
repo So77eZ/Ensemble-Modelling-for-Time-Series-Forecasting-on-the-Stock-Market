@@ -24,13 +24,48 @@
 | `requirements.txt` | Зафиксированные версии всех зависимостей для воспроизводимости окружения |
 | `.vscode/settings.json` | Настройки VS Code: интерпретатор venv, подавление ложных предупреждений Pylance для TF |
 
+## Запуск
+
+```bash
+# Интерактивный режим (запрашивает параметры)
+python stock_modelv15.py
+
+# Прогноз без GUI
+python stock_modelv15.py --ticker SBER --no-gui
+
+# Бэктест на заданную дату
+python stock_modelv15.py --ticker LKOH --backtest 2024-10-14 --ci-mode wide
+
+# Optuna-оптимизация (30 итераций)
+python stock_modelv15.py --ticker GAZP --optimize --trials 30 --no-gui
+
+# Воспроизводимый бенчмарк (SBER, 2024-10-14, дефолтные гиперпараметры)
+python stock_modelv15.py --benchmark
+
+# Презентационный график
+python stock_modelv15.py --ticker SBER --presentation --history-window 90
+```
+
+| Флаг | Описание |
+| --- | --- |
+| `--ticker` | Тикер акции (SBER, LKOH, GAZP, …); по умолчанию SBER |
+| `--backtest` | Дата бэктеста YYYY-MM-DD |
+| `--optimize` | Запустить Optuna |
+| `--trials` | Число итераций Optuna (default: 20) |
+| `--ci-mode` | `wide` (5/95, полная история) / `narrow` (25/75, 3 года) |
+| `--benchmark` | Воспроизводимый бэктест без интерактивного ввода |
+| `--presentation` | Сохранить презентационный PNG 1920×1080 |
+| `--no-gui` | Headless-режим, графики только сохраняются |
+
+---
+
 ## Этапы методологии
 
 ### 1. Сбор данных
 
 - Исторические свечи OHLCV с MOEX через библиотеку `moexalgo` (основной источник) и прямой MOEX ISS REST API (fallback)
 - Фундаментальные показатели (P/E, P/B, ROE, Beta, DivYield, MarketCap) через T-Bank Invest API
-- Актуальный курс USD/RUB загружается динамически с XML API Центрального банка РФ
+- Макроэкономические ряды через `macro_loader.py`: исторический курс USD/RUB (ЦБ РФ XML Dynamic API), ключевая ставка ЦБ РФ (SOAP DailyInfo.asmx), цена Brent (MOEX ISS BRN фьючерс); пропуски выходных заполняются ffill/bfill; при недоступности источника признак исключается динамически
 - Период данных: с 2014-01-01 по текущую дату
 
 ### 2. Формирование признаков (Feature Engineering)
@@ -59,9 +94,11 @@
 - 3 сплита с расширяющимся окном (80/85/90% — граница обучения)
 - На каждом сплите обучаются:
   - **LSTM** (3 слоя, Dropout, EarlyStopping)
-  - **XGBoost Regressor** (вход — сплющенный тензор 30×34 = 1020 признаков)
+  - **XGBoost Regressor** (вход — сплющенный тензор LOOK_BACK × n_features)
   - **Meta-Learner (XGBoost)** — объединяет предсказания LSTM и XGBoost
-- После цикла обучаются **2 квантильные XGBoost-модели CI** на OOS-остатках (actual − meta_pred) тестовых окон; перцентили зависят от `--ci-mode` (5/95 wide, 25/75 narrow)
+- После цикла обучаются **2 квантильные XGBoost-модели CI** на OOS-остатках (actual − meta_pred) тестовых окон; перцентили зависят от режима CI:
+  - `wide` (по умолчанию) — 5/95 перцентили, полная история: учитывает кризисные периоды
+  - `narrow` — 25/75 перцентили, последние 3 года: отражает актуальную волатильность
 - Метрики качества: RMSE, MAE, R²
 - **Тест Льюнга–Бокса** (20 лагов) на OOS-остатках — диагностика автокорреляции; результат в stdout и лог-файле
 - **Тест Грэнжера** на топ-15 признаках по XGBoost feature importance — формальное обоснование выбора фичей
