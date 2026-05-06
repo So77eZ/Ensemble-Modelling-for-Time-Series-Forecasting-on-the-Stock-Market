@@ -629,7 +629,7 @@ def optimize_xgboost_params(X_train, y_train, n_trials=20):
 # MODEL TRAINING
 # ============================================================================
 
-def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_params, backtest_mode=False, backtest_date=None, horizon: int = 1, ci_mode: str = 'wide', macro_data=None):
+def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_params, backtest_mode=False, backtest_date=None, horizon: int = 1, ci_mode: str = 'wide', macro_data=None, fund_data=None):
     logger.info("=" * 60)
     logger.info(f"PREPARING DATA FOR {ticker}")
     if backtest_mode:
@@ -638,7 +638,9 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     logger.info("Calculating technical indicators...")
     data = update_technical_indicators(data)
 
-    if tinkoff_loader:
+    if fund_data is not None:
+        tinkoff_funds = fund_data
+    elif tinkoff_loader:
         tinkoff_funds = tinkoff_loader.get_fundamentals(ticker)
     else:
         tinkoff_funds = {}
@@ -1002,6 +1004,8 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
     macro_start = data['Date'].min().strftime('%Y-%m-%d')
     logger.info("Loading macro data once for all horizons...")
     shared_macro = load_macro_data(macro_start, backtest_date)
+    logger.info("Loading fundamental data once for all horizons...")
+    shared_funds = tinkoff_loader.get_fundamentals(ticker) if tinkoff_loader else {}
 
     all_results = {}
     for h in [1, 2, 3]:
@@ -1012,6 +1016,7 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
             horizon=h,
             ci_mode=ci_mode,
             macro_data=shared_macro,
+            fund_data=shared_funds,
         )
 
     merged = merge_horizon_results(all_results)
@@ -1452,6 +1457,9 @@ if __name__ == '__main__':
         print(f"Тикер '{ticker}' не найден на MOEX или данные не загружены.")
         exit(1)
 
+    logger.info("Loading fundamental data once for all horizons...")
+    shared_funds = tinkoff_loader.get_fundamentals(ticker) if tinkoff_loader else {}
+
     # Получаем или оптимизируем гиперпараметры
     if optimize:
         logger.info("\n" + "="*60)
@@ -1461,12 +1469,7 @@ if __name__ == '__main__':
         # Подготовка данных для оптимизации
         data_for_opt = update_technical_indicators(data.copy())
 
-        if tinkoff_loader:
-            tinkoff_funds = tinkoff_loader.get_fundamentals(ticker)
-        else:
-            tinkoff_funds = {}
-
-        for key, value in tinkoff_funds.items():
+        for key, value in shared_funds.items():
             data_for_opt[key] = value
 
         data_for_opt = data_for_opt.infer_objects(copy=False).fillna(0)
@@ -1633,6 +1636,7 @@ if __name__ == '__main__':
                 horizon=h,
                 ci_mode=ci_mode,
                 macro_data=_shared_macro,
+                fund_data=shared_funds,
             )
 
         merged = merge_horizon_results(all_results)
