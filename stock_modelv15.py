@@ -96,7 +96,10 @@ logger.info("=" * 60)
 logger.info(f"MODEL VERSION: {MODEL_VERSION}")
 logger.info(f"OUTPUT DIR: {MODEL_OUTPUT_DIR}")
 logger.info(f"TensorFlow: {tf.__version__}")
-logger.info(f"GPU Available: {tf.config.list_physical_devices('GPU')}")
+_gpus = tf.config.list_physical_devices('GPU')
+logger.info(f"GPU Available: {_gpus}")
+for _gpu in _gpus:
+    tf.config.experimental.set_memory_growth(_gpu, True)
 logger.info(f"XGBoost Available: {XGBOOST_AVAILABLE}")
 logger.info("=" * 60)
 
@@ -598,7 +601,7 @@ def optimize_lstm_params(X_train, y_train, n_trials=20):
         return min(history.history['val_loss'])
 
     study = optuna.create_study(direction='minimize')
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
     return study.best_params
 
 def optimize_xgboost_params(X_train, y_train, n_trials=20):
@@ -622,7 +625,7 @@ def optimize_xgboost_params(X_train, y_train, n_trials=20):
         return mean_squared_error(y_val, preds)
 
     study = optuna.create_study(direction='minimize')
-    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
     return study.best_params
 
 # ============================================================================

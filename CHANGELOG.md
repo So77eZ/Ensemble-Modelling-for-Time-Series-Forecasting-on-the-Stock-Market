@@ -6,6 +6,19 @@
 
 ---
 
+## [v15.5] — 2026-05-07
+
+### Добавлено
+
+- **GPU memory growth** — `tf.config.experimental.set_memory_growth(gpu, True)` при инициализации; TensorFlow не захватывает всю видеопамять целиком
+- **Прогресс-бар Optuna** — `show_progress_bar=True` в `optimize_lstm_params` и `optimize_xgboost_params`
+
+### Изменено
+
+- **Фундаментальные данные загружаются один раз** — `fund_data=None` в `prepare_and_train_model`; `shared_funds` вычисляется до цикла горизонтов в `run_backtest` и `__main__`; Optuna-блок переиспользует `shared_funds`; было 3–4 обращения к T-Bank API, стало 1
+
+---
+
 ## [v15.4] — 2026-05-07
 
 ### Добавлено

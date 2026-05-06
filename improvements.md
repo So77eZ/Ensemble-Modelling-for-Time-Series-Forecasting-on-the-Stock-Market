@@ -44,11 +44,8 @@
 **Средний приоритет**
 
 - **Ensemble по seeds (N=3–5)** — обучить LSTM с разными seed, усреднить предсказания; стабилизирует метрики без изменения архитектуры. Время прогона ×N.
-- **Больше тикеров и дат в benchmarks** — сейчас SBER + GAZP, одна дата; 3–4 тикера и 2–3 даты исключают впечатление cherry-picking на защите.
-- **GPU memory growth** — добавить в инициализацию: `for gpu in tf.config.list_physical_devices('GPU'): tf.config.experimental.set_memory_growth(gpu, True)`
+- **Больше тикеров и дат в benchmarks** — сейчас 5 тикеров, одна дата; 2–3 даты исключают впечатление cherry-picking на защите.
 - **Configurable start date** — `DATA_START_DATE` в `.env` и `--start-date` в CLI
-- **Оптимизация мета-learner'а** — включить в Optuna или хотя бы вынести параметры в `config.py`
-- **Прогресс-бар для Optuna** — `show_progress_bar=True` или tqdm
 
 **Низкий приоритет (академический интерес)**
 
@@ -80,6 +77,12 @@
 ---
 
 ## Архив (реализовано)
+
+### v15.5 — оптимизация загрузки и UX
+
+- **✅ v15.5 — Фундаментальные данные загружаются один раз** — `fund_data=None` в `prepare_and_train_model`; `shared_funds` загружается до цикла горизонтов в `run_backtest` и `__main__`; Optuna-блок переиспользует `shared_funds`; было 3–4 запроса к T-Bank API, стал 1
+- **✅ v15.5 — GPU memory growth** — `tf.config.experimental.set_memory_growth(gpu, True)` для каждого GPU при инициализации; TensorFlow больше не захватывает всю видеопамять
+- **✅ v15.5 — Прогресс-бар Optuna** — `show_progress_bar=True` в обоих `study.optimize`; прогресс итераций виден в консоли
 
 ### v15.4 — склейка YNDX+YDEX и Ljung-Box guard
 
