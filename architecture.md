@@ -1,10 +1,10 @@
-# Архитектура проекта: Stock Price Forecasting Model v14
+# Архитектура проекта: Stock Price Forecasting Model v15
 
 <!-- markdownlint-disable MD060 -->
 
 ## Обзор
 
-Система прогнозирования рыночных цен акций российского рынка (MOEX). Реализует стэкинг-ансамбль LSTM + XGBoost с доверительными интервалами на основе квантильной регрессии. Поддерживает два режима: прогноз на будущее и бэктест на исторических данных.
+Система прогнозирования рыночных цен акций российского рынка (MOEX). Реализует стэкинг-ансамбль LSTM + XGBoost с доверительными интервалами на основе квантильной регрессии. Поддерживает два режима: прогноз на будущее и бэктест на исторических данных. Начиная с v15 включает time-varying макропризнаки (USD/RUB, ставка ЦБ, Brent), Granger pre-screening и статистическую диагностику остатков.
 
 ---
 
@@ -21,24 +21,27 @@
 
 ```bash
 # Интерактивный режим (рекомендуется)
-python .\stock_modelv14.py
+python .\stock_modelv15.py
 
 # CLI-режим (headless, все параметры через аргументы)
-python .\stock_modelv14.py --ticker SBER --no-gui
-python .\stock_modelv14.py --ticker LKOH --backtest 2025-03-01
-python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
+python .\stock_modelv15.py --ticker SBER --no-gui
+python .\stock_modelv15.py --ticker LKOH --backtest 2025-03-01
+python .\stock_modelv15.py --ticker GAZP --optimize --trials 30 --no-gui
 ```
 
 ### Аргументы CLI
 
 | Аргумент       | Тип            | Описание                                                                                       |
 | -------------- | -------------- | ---------------------------------------------------------------------------------------------- |
-| `--ticker`     | str            | Тикер акции (SBER, LKOH, GAZP, …)                                                              |
-| `--backtest`   | str            | Дата для бэктеста в формате YYYY-MM-DD                                                         |
-| `--optimize`   | flag           | Запустить Optuna для поиска гиперпараметров                                                    |
-| `--trials`     | int            | Количество итераций Optuna (по умолчанию 20)                                                   |
-| `--no-gui`     | flag           | Режим без графического интерфейса (headless)                                                   |
-| `--ci-mode`    | wide / narrow  | Режим CI: wide=5/95 вся история, narrow=25/75 последние 3 года (default: wide)                 |
+| `--ticker`           | str           | Тикер акции (SBER, LKOH, GAZP, …)                                                       |
+| `--backtest`         | str           | Дата для бэктеста в формате YYYY-MM-DD                                                   |
+| `--optimize`         | flag          | Запустить Optuna для поиска гиперпараметров                                              |
+| `--trials`           | int           | Количество итераций Optuna (по умолчанию 20)                                             |
+| `--no-gui`           | flag          | Режим без графического интерфейса (headless)                                             |
+| `--ci-mode`          | wide / narrow | Режим CI: wide=5/95 вся история, narrow=25/75 последние 3 года (default: wide)          |
+| `--benchmark`        | flag          | Воспроизводимый бэктест: SBER, 2024-10-14, дефолтные гиперпараметры, wide CI, headless  |
+| `--presentation`     | flag          | Сохранить презентационный график (16:9, PNG 1920×1080)                                   |
+| `--history-window`   | int           | Количество дней истории для презентационного графика (по умолчанию 90)                  |
 
 ---
 
@@ -126,7 +129,7 @@ python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
 │                   ФОРМИРОВАНИЕ ПРИЗНАКОВ                        │
 │                                                                 │
 │  OHLCV (5) + Технические индикаторы (17) + Returns-фичи (5)     │
-│  + Фундаментал (7)                                              │
+│  + Фундаментал (6) + Макро (0–3, динамически)                   │
 │                                                                 │
 │  Технические индикаторы:                                        │
 │  SMA(10), EMA(20), RSI(14), MACD+Signal+Histogram,              │
@@ -140,9 +143,13 @@ python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
 │                                                                 │
 │  Фундаментальные (из Tinkoff API):                              │
 │  market_cap, roe, dividend_yield, pe_ratio, pb_ratio, beta      │
-│  (остальные поля = 0 — не заполнены)                            │
 │                                                                 │
-│                    Итого: 34 признака                           │
+│  Макропризнаки time-varying (v15, macro_loader.py):             │
+│  usd_rub_hist (ЦБ РФ XML API), cbr_rate (SOAP DailyInfo.asmx)  │
+│  brent_price (MOEX ISS BRN фьючерс)                             │
+│  Granger pre-screening: признаки с p ≥ 0.05 исключаются        │
+│                                                                 │
+│          Итого: 33–36 признаков (динамически)                   │
 └───────────────────────────────┬─────────────────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -153,7 +160,7 @@ python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
 ┌─────────────────────────────────────────────────────────────────┐
 │           ФОРМИРОВАНИЕ ПОСЛЕДОВАТЕЛЬНОСТЕЙ                      │
 │  Скользящее окно LSTM_LOOK_BACK (30 дней)                       │
-│  X.shape = (N, 30, 34),  y.shape = (N,)                         │
+│  X.shape = (N, 30, 33–36),  y.shape = (N,)                      │
 └───────────────────────────────┬─────────────────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -164,6 +171,9 @@ python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
 │  Сплит 3: train=[0..90%]  test=[90%..100%]                      │
 │                                                                 │
 │  Финальные модели берутся из последнего (3-го) сплита           │
+│                                                                 │
+│  [После цикла] Тест Льюнга–Бокса (20 лагов) на OOS-остатках:   │
+│  диагностика автокорреляции → stdout + logger                   │
 └───────────────────────────────┬─────────────────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -286,11 +296,12 @@ python .\stock_modelv14.py --ticker GAZP --optimize --trials 30 --no-gui
 | `xgboost` | 3.x+ | Градиентный бустинг + квантильная регрессия; GPU через `device='cuda'` |
 | `optuna` | 3.x | Байесовская оптимизация гиперпараметров |
 | `scikit-learn` | 1.x | `MinMaxScaler`, метрики (RMSE, MAE, R²) |
+| `statsmodels` | 0.14+ | Тест Льюнга–Бокса (`acorr_ljungbox`), тест Грэнджера (`grangercausalitytests`) |
 | `pandas` | 2.x | Работа с табличными данными |
 | `numpy` | 1.x | Математические операции, массивы |
 | `matplotlib` | 3.x | Визуализация прогнозов |
 | `moexalgo` | — | Загрузка свечей с MOEX (основной источник) |
-| `requests` | — | HTTP-запросы к MOEX ISS и Tinkoff API |
+| `requests` | — | HTTP-запросы к MOEX ISS, Tinkoff API, ЦБ РФ XML/SOAP |
 | `python-dotenv` | — | Загрузка `.env` конфигурации |
 
 ---
@@ -310,10 +321,14 @@ DataFrame → update_technical_indicators()
     → +17 колонок технических индикаторов
 
 ticker → TinkoffFundamentalLoader.get_fundamentals()
-    → +17 колонок фундаментальных данных (6 реальных, 11 = 0)
+    → +6 колонок фундаментальных данных (market_cap, roe, dividend_yield, pe_ratio, pb_ratio, beta)
 
-DataFrame (34 признака) → MinMaxScaler → нормализованный массив
-    → скользящее окно LOOK_BACK=30 → X (N, 30, 34), y (N,)
+load_macro_data(start_date, end_date) → DataFrame[Date, usd_rub_hist, cbr_rate, brent_price]
+    → merge по Date → +0–3 макропризнаков (ffill/bfill для выходных)
+    → Granger pre-screening: признаки с p ≥ 0.05 исключаются из features
+
+DataFrame (33–36 признаков) → MinMaxScaler → нормализованный массив
+    → скользящее окно LOOK_BACK=30 → X (N, 30, 33–36), y (N,)
 
 X, y → Optuna (опционально) → best_lstm_params, best_xgb_params
     → сохранение в {TICKER}_hyperparams.json
@@ -324,7 +339,9 @@ X, y → Optuna (опционально) → best_lstm_params, best_xgb_params
         каждый сплит: LSTM → XGBoost → meta_train=[lstm_pred, xgb_pred]
         → Meta-Learner (точечный прогноз)
         → метрики RMSE, MAE, R²; OOS-остатки (actual − pred) накапливаются
+    [После walk-forward] acorr_ljungbox(oos_residuals, lags=20) → stdout + logger
     Финальные модели (из 3-го сплита) → прямой прогноз на день h
+    [После feature importances] grangercausalitytests топ-15 → stdout + logger
 
 [Прогноз] → FORECAST SUMMARY в logger (per-horizon RMSE/MAE/R², CI ✓/✗)
          → график (.jpg) + отчёт (.txt) с per-horizon метриками
@@ -381,6 +398,16 @@ python -m pytest tests/ -v
 | `test_forecast_dates_horizon1_returns_one_date` | Для `horizon=1` возвращает ровно 1 дату |
 | `test_forecast_dates_horizon3_returns_three_dates` | Для `horizon=3` возвращает ровно 3 даты |
 
+### `tests/test_macro_loader.py`
+
+Проверяет корректность загрузки макроэкономических данных (`macro_loader.py`).
+
+| Тест | Что проверяет |
+| --- | --- |
+| `test_load_macro_data_columns` | DataFrame содержит колонки `Date`, `usd_rub_hist`, `cbr_rate`, `brent_price` |
+| `test_fallback_on_failed_source` | При падении загрузчика колонка `NaN`, `warning` залогирован, остальные колонки целы |
+| `test_date_range_coverage` | Нет дат вне диапазона; нет NaN после ffill/bfill при частичных пропусках |
+
 ### `tests/test_ci_mode.py`
 
 Проверяет функцию `_get_ci_params(ci_mode, X_train, y_train)`, которая выбирает
@@ -398,4 +425,5 @@ python -m pytest tests/ -v
 ```bash
 python -m pytest tests/test_ci_mode.py -v
 python -m pytest tests/test_multihorizon.py -v
+python -m pytest tests/test_macro_loader.py -v
 ```

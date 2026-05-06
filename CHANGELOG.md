@@ -6,6 +6,42 @@
 
 ---
 
+## [v15] — 2026-05-05 – 2026-05-06
+
+### Добавлено
+
+- `macro_loader.py` — новый модуль загрузки макроэкономических данных:
+  - `_load_cbr_usd_rub_history` — исторический курс USD/RUB через ЦБ РФ XML Dynamic API (один запрос на весь диапазон)
+  - `_load_cbr_key_rate` — ключевая ставка ЦБ РФ через SOAP API `DailyInfo.asmx` (`KeyRate` action)
+  - `_load_moex_brent` — цена Brent из MOEX ISS (фьючерсы BR, ближний контракт); формат secid `BR{letter}{year_digit}`
+  - `load_macro_data(start, end)` — публичный интерфейс: возвращает `DataFrame[Date, usd_rub_hist, cbr_rate, brent_price]`, ffill/bfill для выходных; при недоступности источника — NaN + `logger.warning`
+- Три time-varying макропризнака (`usd_rub_hist`, `cbr_rate`, `brent_price`) вместо константного `value_usd`; признаки добавляются к датафрейму перед обучением
+- **Granger pre-screening** — перед обучением каждого горизонта макропризнаки проверяются тестом Грэнджера (`maxlag=5`); признаки с p ≥ 0.05 динамически исключаются из `features`
+- **Тест Льюнга–Бокса** (20 лагов) на OOS-остатках walk-forward — диагностика автокорреляции; результат выводится в stdout и logger
+- **Тест Грэнжера** на топ-15 признаках по XGBoost feature importance — формальное обоснование выбора фичей; результат выводится в stdout и logger
+- `--benchmark` CLI-флаг — воспроизводимый бэктест (SBER, 2024-10-14, дефолтные гиперпараметры, wide CI, headless); результат для сравнения версий
+- INFO-логи в `macro_loader.py` для каждого источника: число записей, диапазон дат, диапазон значений
+- `statsmodels>=0.14.0` добавлен в `requirements.txt`
+- `tests/test_macro_loader.py` — три теста: колонки, fallback при падении источника, покрытие дат
+
+### Исправлено
+
+- Макроданные теперь загружаются **один раз** на весь прогон: параметр `macro_data=None` в `prepare_and_train_model`; `run_backtest` и `__main__` передают общий объект во все горизонты
+- `_load_cbr_key_rate`: замена HTML-скрапинга на SOAP API (HTML-страница ЦБ РФ игнорировала параметры дат и возвращала только последние 5 записей)
+- `_load_moex_brent`: исправлен формат secid с `BRN-M.YY` на `BR{letter}{digit}` (например, `BRK6` вместо `BRN-5.26`)
+- `acorr_ljungbox`: параметр `lags=` вместо устаревшего `nlags=` (statsmodels ≥ 0.14)
+- Индексирование результата Granger: `res[0]['ssr_ftest'][1]` вместо `res[1][0][1]` (который вызывал `RegressionResultsWrapper not subscriptable`)
+- Удалён аргумент `verbose=False` из всех вызовов `grangercausalitytests` (устранён `FutureWarning`)
+- Символы Unicode `→←⚠✓✗²` заменены на ASCII-эквиваленты `->`, `<-`, `[!]`, `[ok]`, `[no]`, `R2` (Windows cp1251 UnicodeEncodeError)
+
+### Изменено
+
+- `value_usd` (константный курс на всю историю) заменён тремя time-varying макропризнаками; `get_usd_rub_rate()` сохранён как внутренний fallback в `macro_loader.py`
+- Вектор признаков: 34 → 34–36 (динамически, зависит от Granger-скрининга)
+- `MODEL_VERSION = 'v15'`, пути вывода `outputs/v15/`
+
+---
+
 ## [v14.5] — 2026-05-03
 
 ### Исправлено
