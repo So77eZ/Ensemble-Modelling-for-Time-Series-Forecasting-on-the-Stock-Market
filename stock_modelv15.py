@@ -536,6 +536,9 @@ def update_technical_indicators(data):
     data['Vol_Return_20'] = returns.rolling(20).std()
     data['Return_MA_5'] = returns.rolling(5).mean()
     data['Return_MA_10'] = returns.rolling(10).mean()
+    data['day_of_week'] = data['Date'].dt.dayofweek   # 0=пн … 4=пт
+    data['month']       = data['Date'].dt.month        # 1–12
+    data['quarter']     = data['Date'].dt.quarter      # 1–4
     return data
 
 # ============================================================================
@@ -646,6 +649,8 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         # --- Скользящая волатильность и momentum доходностей ---
         'Vol_Return_5', 'Vol_Return_10', 'Vol_Return_20',
         'Return_MA_5', 'Return_MA_10',
+        # --- Сезонность ---
+        'day_of_week', 'month', 'quarter',
         # --- Фундаментальные (snapshot из Tinkoff Invest API) ---
         'market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'beta',
         # --- Макроэкономические (time-varying, загружаются из macro_loader) ---
@@ -1447,6 +1452,8 @@ if __name__ == '__main__':
             'BB_Middle', 'BB_Upper', 'BB_Lower', 'BB_Width',
             'ATR_14', 'Stoch_K', 'Stoch_D', 'ADX_14', 'Momentum_10',
             'Price_Change_1', 'Price_Change_5',
+            # --- Сезонность ---
+            'day_of_week', 'month', 'quarter',
             # --- Фундаментальные (snapshot из Tinkoff Invest API) ---
             'market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'beta',
             # --- Макроэкономические (time-varying) ---
