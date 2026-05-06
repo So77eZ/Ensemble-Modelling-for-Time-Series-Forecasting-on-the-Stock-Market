@@ -4,7 +4,7 @@
 
 ## Обзор
 
-Система прогнозирования рыночных цен акций российского рынка (MOEX). Реализует стэкинг-ансамбль LSTM + XGBoost с доверительными интервалами на основе квантильной регрессии. Поддерживает два режима: прогноз на будущее и бэктест на исторических данных. Начиная с v15 включает time-varying макропризнаки (USD/RUB, ставка ЦБ, Brent), Granger pre-screening и статистическую диагностику остатков. С v15.1 — фиксированный seed (`RANDOM_SEED=42`) и метрика Direction Accuracy. С v15.2 — признаки сезонности (`day_of_week`, `month`, `quarter`).
+Система прогнозирования рыночных цен акций российского рынка (MOEX). Реализует стэкинг-ансамбль LSTM + XGBoost с доверительными интервалами на основе квантильной регрессии. Поддерживает два режима: прогноз на будущее и бэктест на исторических данных. Начиная с v15 включает time-varying макропризнаки (USD/RUB, ставка ЦБ, Brent), Granger pre-screening и статистическую диагностику остатков. С v15.1 — фиксированный seed (`RANDOM_SEED=42`) и метрика Direction Accuracy. С v15.2 — признаки сезонности (`day_of_week`, `month`, `quarter`). С v15.3 — Ridge мета-леарнер с интерпретируемыми весами. С v15.4 — автосклейка YNDX+YDEX и Ljung-Box guard для коротких рядов.
 
 ---
 
@@ -118,6 +118,8 @@ python .\stock_modelv15.py --ticker GAZP --optimize --trials 30 --no-gui
 │  └──────────────┬────────────┘  └────────────┬─────────────┘    │
 │                 └─────────────┬──────────────┘                  │
 │                               │ OHLCV с 2014-01-01              │
+│  При ticker=YDEX: автосклейка YNDX (до 2024-06-14)              │
+│  + YDEX (с 2024-07-24), ratio≈1.019, итого 3053 строки          │
 │  ┌────────────────────────────▼──────────────────────────────┐  │
 │  │              TinkoffFundamentalLoader                     │  │
 │  │  T-Bank Invest REST API → P/E, P/B, ROE, Beta,            │  │
@@ -203,9 +205,10 @@ python .\stock_modelv15.py --ticker GAZP --optimize --trials 30 --no-gui
 │  └──────────────────────────┼───────────────────────────────┘   │
 │                             ▼                                   │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Уровень 1 — Meta-Learner (XGBoost)                      │   │
+│  │  Уровень 1 — Meta-Learner (Ridge, v15.3)                  │   │
 │  │  Вход: [lstm_pred, xgb_pred] (2 признака)                │   │
-│  │  meta_learner → точечный прогноз Close (MSE-цель)        │   │
+│  │  Ridge(alpha=1.0) → точечный прогноз Close               │   │
+│  │  coef_[0]=LSTM weight, coef_[1]=XGB weight (в лог)       │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │                                                                 │
 │  ┌──────────────────────────────────────────────────────────┐   │
@@ -344,7 +347,8 @@ X, y → Optuna (опционально) → best_lstm_params, best_xgb_params
         каждый сплит: LSTM → XGBoost → meta_train=[lstm_pred, xgb_pred]
         → Meta-Learner (точечный прогноз)
         → метрики RMSE, MAE, R²; OOS-остатки (actual − pred) накапливаются
-    [После walk-forward] acorr_ljungbox(oos_residuals, lags=20) → stdout + logger
+    [После walk-forward] acorr_ljungbox(lags=min(20,len//2)) → stdout + logger
+    (пропускается если lags < 2 — защита для тикеров с короткой историей)
     Финальные модели (из 3-го сплита) → прямой прогноз на день h
     [После feature importances] grangercausalitytests топ-15 → stdout + logger
 

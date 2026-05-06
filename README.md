@@ -64,6 +64,7 @@ python stock_modelv15.py --ticker SBER --presentation --history-window 90
 ### 1. Сбор данных
 
 - Исторические свечи OHLCV с MOEX через библиотеку `moexalgo` (основной источник) и прямой MOEX ISS REST API (fallback)
+- **Автоматическая склейка реструктурированных тикеров (v15.4):** при `ticker=YDEX` загружаются и объединяются `YNDX` (до 2024-06-14) и `YDEX` (с 2024-07-24); коэффициент обмена 1:1 — нормировка не нужна; итого 3053 строки истории с 2014 года
 - Фундаментальные показатели (P/E, P/B, ROE, Beta, DivYield, MarketCap) через T-Bank Invest API
 - Макроэкономические ряды через `macro_loader.py`: исторический курс USD/RUB (ЦБ РФ XML Dynamic API), ключевая ставка ЦБ РФ (SOAP DailyInfo.asmx), цена Brent (MOEX ISS BRN фьючерс); пропуски выходных заполняются ffill/bfill; при недоступности источника признак исключается динамически
 - Период данных: с 2014-01-01 по текущую дату
@@ -96,12 +97,12 @@ python stock_modelv15.py --ticker SBER --presentation --history-window 90
 - На каждом сплите обучаются:
   - **LSTM** (3 слоя, Dropout, EarlyStopping)
   - **XGBoost Regressor** (вход — сплющенный тензор LOOK_BACK × n_features)
-  - **Meta-Learner (XGBoost)** — объединяет предсказания LSTM и XGBoost
+  - **Meta-Learner (Ridge, v15.3)** — `Ridge(alpha=1.0)` объединяет предсказания LSTM и XGBoost; веса `coef_[0]`/`coef_[1]` выводятся в лог на каждом сплите
 - После цикла обучаются **2 квантильные XGBoost-модели CI** на OOS-остатках (actual − meta_pred) тестовых окон; перцентили зависят от режима CI:
   - `wide` (по умолчанию) — 5/95 перцентили, полная история: учитывает кризисные периоды
   - `narrow` — 25/75 перцентили, последние 3 года: отражает актуальную волатильность
 - Метрики качества: RMSE, MAE, R²
-- **Тест Льюнга–Бокса** (20 лагов) на OOS-остатках — диагностика автокорреляции; результат в stdout и лог-файле
+- **Тест Льюнга–Бокса** (`min(20, len//2)` лагов) на OOS-остатках — диагностика автокорреляции; при менее 2 лагах пропускается; результат в stdout и лог-файле
 - **Тест Грэнжера** на топ-15 признаках по XGBoost feature importance — формальное обоснование выбора фичей
 - Фиксированный `RANDOM_SEED = 42` (`random`, `numpy`, `tensorflow`) — воспроизводимые результаты между прогонами
 
@@ -123,7 +124,7 @@ python stock_modelv15.py --ticker SBER --presentation --history-window 90
 - **Временные ряды:** walk-forward валидация, скользящее окно, предотвращение data leakage
 - **Глубокое обучение:** LSTM, Dropout, EarlyStopping, Adam
 - **Градиентный бустинг:** XGBoost, квантильная регрессия
-- **Ансамблирование:** стэкинг, Meta-Learner
+- **Ансамблирование:** стэкинг, Meta-Learner (Ridge — интерпретируемые веса LSTM/XGBoost)
 - **Оптимизация:** Optuna (байесовский поиск), holdout-оценка, персистентность гиперпараметров
 - **Feature engineering:** технические индикаторы, фундаментальный анализ
 - **Интеграция API:** MOEX ISS, T-Bank Invest REST API, ЦБ РФ XML API, ЦБ РФ SOAP DailyInfo
