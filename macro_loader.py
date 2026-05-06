@@ -1,4 +1,3 @@
-import re
 import logging
 import certifi
 import requests
@@ -40,67 +39,94 @@ def _load_cbr_usd_rub_history(start: str, end: str) -> pd.Series:
 
 
 def _load_cbr_key_rate(start: str, end: str) -> pd.Series:
-    """Ключевая ставка ЦБ РФ из HTML-таблицы (без lxml)."""
-    url = (
-        "https://www.cbr.ru/hd_base/KeyRate/"
-        f"?UniDbQuery.Posted=True&UniDbQuery.From={start}&UniDbQuery.To={end}"
+    """Ключевая ставка ЦБ РФ через SOAP API DailyInfo.asmx."""
+    soap_body = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">'
+        '<soap:Body>'
+        '<KeyRate xmlns="http://web.cbr.ru/">'
+        f'<fromDate>{start}T00:00:00</fromDate>'
+        f'<ToDate>{end}T00:00:00</ToDate>'
+        '</KeyRate>'
+        '</soap:Body>'
+        '</soap:Envelope>'
     )
     try:
-        resp = requests.get(url, timeout=15, verify=certifi.where())
-        resp.raise_for_status()
-        # Строки таблицы: <td>ДД.ММ.ГГГГ</td><td>X,XX</td>
-        rows = re.findall(
-            r'<td[^>]*>\s*(\d{2}\.\d{2}\.\d{4})\s*</td>\s*<td[^>]*>\s*([\d,]+)\s*</td>',
-            resp.text
+        resp = requests.post(
+            'https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx',
+            data=soap_body.encode('utf-8'),
+            headers={
+                'Content-Type': 'text/xml; charset=utf-8',
+                'SOAPAction': 'http://web.cbr.ru/KeyRate',
+            },
+            timeout=30,
+            verify=certifi.where(),
         )
-        if not rows:
-            raise ValueError("no rows parsed from HTML")
-        dates = [datetime.strptime(r[0], '%d.%m.%Y') for r in rows]
-        rates = [float(r[1].replace(',', '.')) for r in rows]
-        return pd.Series(rates, index=pd.to_datetime(dates), name='cbr_rate')
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+        dates, rates = [], []
+        for kr in root.iter('KR'):
+            dt_el   = kr.find('DT')
+            rate_el = kr.find('Rate')
+            if dt_el is not None and rate_el is not None and dt_el.text:
+                dates.append(pd.to_datetime(dt_el.text[:10]))
+                rates.append(float(rate_el.text))
+        if not dates:
+            raise ValueError("empty SOAP response")
+        return pd.Series(rates, index=pd.DatetimeIndex(dates), name='cbr_rate')
     except Exception as e:
         logger.warning(f"cbr_rate: CBR key rate unavailable ({e})")
         return pd.Series(dtype=float)
 
 
 def _load_moex_brent(start: str, end: str) -> pd.Series:
-    """Цена Brent из MOEX ISS (фьючерс BRN, ближний контракт по месяцу)."""
-    # MOEX использует формат BRN-M.YY, например BRN-3.25 для март 2025
+    """Цена Brent из MOEX ISS (фьючерс BR, ближний контракт).
+
+    Формат secid: BR{letter}{year_digit}, где letter — стандартные коды месяцев
+    фьючерсных контрактов (F=янв, G=фев, H=мар, J=апр, K=май, M=июн,
+    N=июл, Q=авг, U=сен, V=окт, X=ноя, Z=дек), year_digit — последняя цифра года.
+    """
+    _MONTH_LETTERS = {
+        1: 'F', 2: 'G', 3: 'H', 4: 'J',  5: 'K',  6: 'M',
+        7: 'N', 8: 'Q', 9: 'U', 10: 'V', 11: 'X', 12: 'Z',
+    }
     start_dt = datetime.strptime(start, '%Y-%m-%d')
     end_dt   = datetime.strptime(end,   '%Y-%m-%d')
 
     all_frames = []
+    seen_secids = set()
     year, month = start_dt.year, start_dt.month
 
-    # Итерируем по месяцам с запасом +2 месяца (чтобы покрыть экспирацию)
     while datetime(year, month, 1) <= end_dt + timedelta(days=62):
-        secid = f"BRN-{month}.{str(year)[-2:]}"
-        url = (
-            f"https://iss.moex.com/iss/history/engines/futures/markets/forts"
-            f"/boards/RFUD/securities/{secid}/candles.json"
-        )
-        try:
-            resp = requests.get(
-                url,
-                params={'interval': 24, 'from': start, 'till': end, 'iss.meta': 'off'},
-                timeout=15,
-                verify=certifi.where()
+        secid = f"BR{_MONTH_LETTERS[month]}{str(year)[-1]}"
+        if secid not in seen_secids:
+            seen_secids.add(secid)
+            url = (
+                f"https://iss.moex.com/iss/history/engines/futures/markets/forts"
+                f"/boards/RFUD/securities/{secid}/candles.json"
             )
-            if resp.status_code == 200:
-                j = resp.json()
-                cols = j['history']['columns']
-                rows = j['history']['data']
-                if rows:
-                    ci = cols.index('CLOSE')
-                    di = cols.index('TRADEDATE')
-                    filtered = [r for r in rows if r[ci] is not None]
-                    if filtered:
-                        all_frames.append(pd.DataFrame({
-                            'Date':        pd.to_datetime([r[di] for r in filtered]),
-                            'brent_price': [float(r[ci]) for r in filtered],
-                        }))
-        except Exception:
-            pass
+            try:
+                resp = requests.get(
+                    url,
+                    params={'interval': 24, 'from': start, 'till': end, 'iss.meta': 'off'},
+                    timeout=15,
+                    verify=certifi.where(),
+                )
+                if resp.status_code == 200:
+                    j = resp.json()
+                    cols = j['history']['columns']
+                    rows = j['history']['data']
+                    if rows:
+                        ci = cols.index('CLOSE')
+                        di = cols.index('TRADEDATE')
+                        filtered = [r for r in rows if r[ci] is not None]
+                        if filtered:
+                            all_frames.append(pd.DataFrame({
+                                'Date':        pd.to_datetime([r[di] for r in filtered]),
+                                'brent_price': [float(r[ci]) for r in filtered],
+                            }))
+            except Exception:
+                pass
 
         month += 1
         if month > 12:
@@ -114,7 +140,7 @@ def _load_moex_brent(start: str, end: str) -> pd.Series:
     combined = (
         pd.concat(all_frames)
         .sort_values('Date')
-        .drop_duplicates('Date', keep='first')  # ближний = наименьший secid при сортировке
+        .drop_duplicates('Date', keep='first')
     )
     return pd.Series(
         combined['brent_price'].values,
