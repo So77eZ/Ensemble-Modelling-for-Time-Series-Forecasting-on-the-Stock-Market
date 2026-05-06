@@ -749,6 +749,21 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         for feat, imp in sorted_importances[:10]:
             logger.info(f" {feat}: {imp:.4f}")
 
+        from statsmodels.tsa.stattools import grangercausalitytests
+        top15 = [name for name, _ in sorted_importances[:15]]
+        logger.info("Granger causality (top-15 features → Close, maxlag=5):")
+        print("Granger causality (top-15 features → Close, maxlag=5):")
+        for feat in top15:
+            try:
+                result = grangercausalitytests(data[['Close', feat]].dropna(), maxlag=5, verbose=False)
+                min_pval = min(res[1][0][1] for res in result.values())
+                gc_flag = "✓" if min_pval < 0.05 else "✗"
+                msg = f"  Close ← {feat:<22}: p={min_pval:.3f} {gc_flag}"
+            except Exception as e:
+                msg = f"  Close ← {feat:<22}: ⚠ тест не удался ({e})"
+            print(msg)
+            logger.info(msg)
+
         logger.info("Generating level 0 predictions...")
         lstm_train_preds = lstm_model.predict(X_train, verbose=0).flatten()
         xgb_train_preds = xgb_model.predict(X_train_flat)
@@ -813,6 +828,14 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     residual_bias = float(np.median(oos_residuals))
     oos_residuals_centered = oos_residuals - residual_bias
     logger.info(f"Residual bias (median): {residual_bias:.6f}")
+
+    from statsmodels.stats.diagnostic import acorr_ljungbox
+    lb = acorr_ljungbox(oos_residuals_centered, nlags=20, return_df=True)
+    min_pval = lb['lb_pvalue'].min()
+    lb_flag = "⚠ автокорреляция обнаружена" if min_pval < 0.05 else "✓ остатки некоррелированы"
+    lb_msg = f"Ljung-Box (20 лагов): p-min={min_pval:.3f} {lb_flag}"
+    print(lb_msg)
+    logger.info(lb_msg)
 
     meta_q_oos, res_q, lower_alpha, upper_alpha = _get_ci_params(
         ci_mode, oos_meta, oos_residuals_centered
