@@ -396,9 +396,7 @@ tinkoff_loader = TinkoffFundamentalLoader(tinkoff_token) if tinkoff_token else N
 # STOCK DATA LOADING
 # ============================================================================
 
-def load_stock_data_moex_test(ticker_symbol, start_date, end_date):
-    logger.info(f"Deep data loading for {ticker_symbol} from {start_date} to {end_date}...")
-    
+def _load_single_ticker(ticker_symbol, start_date, end_date):
     try:
         from moexalgo import Ticker
         stock = Ticker(ticker_symbol)
@@ -407,10 +405,10 @@ def load_stock_data_moex_test(ticker_symbol, start_date, end_date):
             data = data[['begin', 'open', 'high', 'low', 'close', 'volume']]
             data.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
             data['Date'] = pd.to_datetime(data['Date']).dt.tz_localize(None)
-            logger.info(f" -> moexalgo: {len(data)} rows ({data['Date'].min()} to {data['Date'].max()})")
+            logger.info(f" -> moexalgo {ticker_symbol}: {len(data)} rows ({data['Date'].min()} to {data['Date'].max()})")
             return data
     except Exception as e:
-        logger.warning(f" moexalgo error: {e}. Switching to direct API...")
+        logger.warning(f" moexalgo error ({ticker_symbol}): {e}. Switching to direct API...")
 
     base_url = (
         "https://iss.moex.com/iss/history/engines/stock/markets/shares/boards/TQBR/"
@@ -434,7 +432,7 @@ def load_stock_data_moex_test(ticker_symbol, start_date, end_date):
             all_data.append(df_chunk)
             start += len(rows)
         except Exception as e:
-            logger.warning(f"Direct MOEX API error: {e}")
+            logger.warning(f"Direct MOEX API error ({ticker_symbol}): {e}")
             break
 
     if all_data:
@@ -443,11 +441,36 @@ def load_stock_data_moex_test(ticker_symbol, start_date, end_date):
         data.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
         data['Date'] = pd.to_datetime(data['Date'])
         data = data.sort_values('Date').drop_duplicates()
-        logger.info(f" -> Total loaded: {len(data)} rows ({data['Date'].min()} to {data['Date'].max()})")
+        logger.info(f" -> REST {ticker_symbol}: {len(data)} rows ({data['Date'].min()} to {data['Date'].max()})")
         return data
     else:
         logger.error(f"Could not load data for {ticker_symbol}")
         return None
+
+
+def load_stock_data_moex_test(ticker_symbol, start_date, end_date):
+    logger.info(f"Deep data loading for {ticker_symbol} from {start_date} to {end_date}...")
+
+    # YDEX (МКПАО Яндекс, листинг с 2024-07) склеивается с YNDX (Yandex N.V., до 2024-06).
+    # Коэффициент обмена акций 1:1 — нормировка не нужна.
+    if ticker_symbol == 'YDEX':
+        yndx = _load_single_ticker('YNDX', start_date, end_date)
+        ydex = _load_single_ticker('YDEX', start_date, end_date)
+        parts = [p for p in [yndx, ydex] if p is not None and not p.empty]
+        if not parts:
+            logger.error("YDEX: не удалось загрузить ни YNDX, ни YDEX")
+            return None
+        if len(parts) == 2:
+            last_yndx = float(parts[0]['Close'].iloc[-1])
+            first_ydex = float(parts[1]['Close'].iloc[0])
+            ratio = first_ydex / last_yndx if last_yndx != 0 else 1.0
+            logger.info(f"Стык YNDX/YDEX: последняя YNDX={last_yndx:.2f}, первая YDEX={first_ydex:.2f}, ratio={ratio:.4f}")
+        merged = pd.concat(parts, ignore_index=True)
+        merged = merged.sort_values('Date').drop_duplicates(subset='Date').reset_index(drop=True)
+        logger.info(f"YNDX+YDEX итого: {len(merged)} строк ({merged['Date'].min()} до {merged['Date'].max()})")
+        return merged
+
+    return _load_single_ticker(ticker_symbol, start_date, end_date)
 
 # ============================================================================
 # TECHNICAL INDICATORS
