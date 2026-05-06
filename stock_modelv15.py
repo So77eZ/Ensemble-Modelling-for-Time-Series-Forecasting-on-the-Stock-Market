@@ -863,10 +863,14 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     logger.info(f"Residual bias (median): {residual_bias:.6f}")
 
     from statsmodels.stats.diagnostic import acorr_ljungbox
-    lb = acorr_ljungbox(oos_residuals_centered, lags=20, return_df=True)
-    min_pval = lb['lb_pvalue'].min()
-    lb_flag = "автокорреляция обнаружена" if min_pval < 0.05 else "остатки некоррелированы"
-    lb_msg = f"Ljung-Box (20 лагов): p-min={min_pval:.3f} [{lb_flag}]"
+    lb_lags = min(20, len(oos_residuals_centered) // 2)
+    if lb_lags >= 2:
+        lb = acorr_ljungbox(oos_residuals_centered, lags=lb_lags, return_df=True)
+        min_pval = lb['lb_pvalue'].min()
+        lb_flag = "автокорреляция обнаружена" if min_pval < 0.05 else "остатки некоррелированы"
+        lb_msg = f"Ljung-Box ({lb_lags} лагов): p-min={min_pval:.3f} [{lb_flag}]"
+    else:
+        lb_msg = f"Ljung-Box: недостаточно данных ({len(oos_residuals_centered)} остатков)"
     print(lb_msg)
     logger.info(lb_msg)
 
