@@ -751,16 +751,16 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
 
         from statsmodels.tsa.stattools import grangercausalitytests
         top15 = [name for name, _ in sorted_importances[:15]]
-        logger.info("Granger causality (top-15 features → Close, maxlag=5):")
-        print("Granger causality (top-15 features → Close, maxlag=5):")
+        logger.info("Granger causality (top-15 features -> Close, maxlag=5):")
+        print("Granger causality (top-15 features -> Close, maxlag=5):")
         for feat in top15:
             try:
                 result = grangercausalitytests(data[['Close', feat]].dropna(), maxlag=5, verbose=False)
                 min_pval = min(res[1][0][1] for res in result.values())
-                gc_flag = "✓" if min_pval < 0.05 else "✗"
-                msg = f"  Close ← {feat:<22}: p={min_pval:.3f} {gc_flag}"
+                gc_flag = "[ok]" if min_pval < 0.05 else "[no]"
+                msg = f"  Close <- {feat:<22}: p={min_pval:.3f} {gc_flag}"
             except Exception as e:
-                msg = f"  Close ← {feat:<22}: ⚠ тест не удался ({e})"
+                msg = f"  Close <- {feat:<22}: [!] тест не удался ({e})"
             print(msg)
             logger.info(msg)
 
@@ -832,8 +832,8 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     from statsmodels.stats.diagnostic import acorr_ljungbox
     lb = acorr_ljungbox(oos_residuals_centered, nlags=20, return_df=True)
     min_pval = lb['lb_pvalue'].min()
-    lb_flag = "⚠ автокорреляция обнаружена" if min_pval < 0.05 else "✓ остатки некоррелированы"
-    lb_msg = f"Ljung-Box (20 лагов): p-min={min_pval:.3f} {lb_flag}"
+    lb_flag = "автокорреляция обнаружена" if min_pval < 0.05 else "остатки некоррелированы"
+    lb_msg = f"Ljung-Box (20 лагов): p-min={min_pval:.3f} [{lb_flag}]"
     print(lb_msg)
     logger.info(lb_msg)
 
