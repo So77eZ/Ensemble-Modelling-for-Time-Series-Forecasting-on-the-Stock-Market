@@ -830,7 +830,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     logger.info(f"Residual bias (median): {residual_bias:.6f}")
 
     from statsmodels.stats.diagnostic import acorr_ljungbox
-    lb = acorr_ljungbox(oos_residuals_centered, nlags=20, return_df=True)
+    lb = acorr_ljungbox(oos_residuals_centered, lags=20, return_df=True)
     min_pval = lb['lb_pvalue'].min()
     lb_flag = "автокорреляция обнаружена" if min_pval < 0.05 else "остатки некоррелированы"
     lb_msg = f"Ljung-Box (20 лагов): p-min={min_pval:.3f} [{lb_flag}]"
