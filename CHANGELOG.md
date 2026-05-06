@@ -6,6 +6,22 @@
 
 ---
 
+## [v15.7] — 2026-05-07
+
+### Добавлено
+
+- **IMOEX и RTSI как time-varying признаки** — `_load_moex_index(index_id, start, end)` в `macro_loader.py`; запросы к MOEX ISS candles API (engines/stock/markets/index/boards/SNDX), разбитые по годам; `imoex` и `rtsi` добавлены в `load_macro_data` и в `_MACRO_COLS`; Granger pre-screening автоматически исключает незначимые индексы
+
+---
+
+## [v15.6] — 2026-05-07
+
+### Добавлено
+
+- **Optuna оптимизация Ridge alpha** — `optimize_ridge_alpha(meta_features, y_true, n_trials=20)`; log-uniform поиск alpha ∈ [1e-3, 100] за 20 итераций; оценка через 5-fold CV (`neg_mean_squared_error`) на OOS-предсказаниях walk-forward; после поиска финальный Ridge переобучается с `best_alpha` на данных последнего сплита; при 2 входных признаках best_alpha стремится к нулю (LSTM weight ≈ −0.02, XGB weight ≈ 1.02 — Ridge вырождается в OLS)
+
+---
+
 ## [v15.5] — 2026-05-07
 
 ### Добавлено

@@ -59,7 +59,7 @@ tf.random.set_seed(RANDOM_SEED)
 from presentation_output import plot_presentation
 from macro_loader import load_macro_data
 
-_MACRO_COLS = ['usd_rub_hist', 'cbr_rate', 'brent_price']
+_MACRO_COLS = ['usd_rub_hist', 'cbr_rate', 'brent_price', 'imoex', 'rtsi']
 
 from config import (
     LSTM_LOOK_BACK, LSTM_EPOCHS, LSTM_PATIENCE, LSTM_BATCH_SIZE,
@@ -671,7 +671,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     # Макроэкономические time-varying признаки
     if macro_data is None:
         macro_start = data['Date'].min().strftime('%Y-%m-%d')
-        logger.info("Loading macro data (USD/RUB history, CBR key rate, Brent)...")
+        logger.info("Loading macro data (USD/RUB history, CBR key rate, Brent, IMOEX, RTSI)...")
         macro_data = load_macro_data(macro_start, end_date)
     data['Date'] = pd.to_datetime(data['Date']).dt.normalize()
     data = data.merge(macro_data, on='Date', how='left')

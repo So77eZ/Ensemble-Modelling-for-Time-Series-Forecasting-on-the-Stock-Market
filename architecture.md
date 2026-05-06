@@ -4,7 +4,7 @@
 
 ## Обзор
 
-Система прогнозирования рыночных цен акций российского рынка (MOEX). Реализует стэкинг-ансамбль LSTM + XGBoost с доверительными интервалами на основе квантильной регрессии. Поддерживает два режима: прогноз на будущее и бэктест на исторических данных. Начиная с v15 включает time-varying макропризнаки (USD/RUB, ставка ЦБ, Brent), Granger pre-screening и статистическую диагностику остатков. С v15.1 — фиксированный seed (`RANDOM_SEED=42`) и метрика Direction Accuracy. С v15.2 — признаки сезонности (`day_of_week`, `month`, `quarter`). С v15.3 — Ridge мета-леарнер с интерпретируемыми весами. С v15.4 — автосклейка YNDX+YDEX и Ljung-Box guard для коротких рядов.
+Система прогнозирования рыночных цен акций российского рынка (MOEX). Реализует стэкинг-ансамбль LSTM + XGBoost с доверительными интервалами на основе квантильной регрессии. Поддерживает два режима: прогноз на будущее и бэктест на исторических данных. Начиная с v15 включает time-varying макропризнаки (USD/RUB, ставка ЦБ, Brent), Granger pre-screening и статистическую диагностику остатков. С v15.1 — фиксированный seed (`RANDOM_SEED=42`) и метрика Direction Accuracy. С v15.2 — признаки сезонности (`day_of_week`, `month`, `quarter`). С v15.3 — Ridge мета-леарнер с интерпретируемыми весами. С v15.4 — автосклейка YNDX+YDEX и Ljung-Box guard для коротких рядов. С v15.6 — Optuna-оптимизация alpha Ridge: 20-trial поиск на накопленных OOS-данных walk-forward. С v15.7 — IMOEX и RTSI как time-varying признаки рыночного контекста.
 
 ---
 
@@ -149,18 +149,19 @@ python .\stock_modelv15.py --ticker GAZP --optimize --trials 30 --no-gui
 │  Макропризнаки time-varying (v15, macro_loader.py):             │
 │  usd_rub_hist (ЦБ РФ XML API), cbr_rate (SOAP DailyInfo.asmx)  │
 │  brent_price (MOEX ISS BRN фьючерс)                             │
+│  imoex, rtsi (MOEX ISS candles, engines/stock/markets/index)    │
 │  Granger pre-screening: признаки с p ≥ 0.05 исключаются        │
 │                                                                 │
 │  Сезонность (v15.2):                                            │
 │  day_of_week (0=пн…4=пт), month (1–12), quarter (1–4)          │
 │  вычисляются в update_technical_indicators из Date              │
 │                                                                 │
-│          Итого: 36–39 признаков (динамически)                   │
+│          Итого: 36–41 признаков (динамически)                   │
 └───────────────────────────────┬─────────────────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │              НОРМАЛИЗАЦИЯ (MinMaxScaler)                        │
-│  Общий скейлер для всех 36–39 признаков + отдельный для Close   │
+│  Общий скейлер для всех 36–41 признаков + отдельный для Close   │
 └───────────────────────────────┬─────────────────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -205,9 +206,10 @@ python .\stock_modelv15.py --ticker GAZP --optimize --trials 30 --no-gui
 │  └──────────────────────────┼───────────────────────────────┘   │
 │                             ▼                                   │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Уровень 1 — Meta-Learner (Ridge, v15.3)                  │   │
+│  │  Уровень 1 — Meta-Learner (Ridge, v15.3+v15.6)             │   │
 │  │  Вход: [lstm_pred, xgb_pred] (2 признака)                │   │
-│  │  Ridge(alpha=1.0) → точечный прогноз Close               │   │
+│  │  alpha: Optuna 20-trial log-uniform [1e-3,100] на OOS     │   │
+│  │  Ridge(alpha=best) → точечный прогноз Close               │   │
 │  │  coef_[0]=LSTM weight, coef_[1]=XGB weight (в лог)       │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │                                                                 │
@@ -331,12 +333,12 @@ DataFrame → update_technical_indicators()
 ticker → TinkoffFundamentalLoader.get_fundamentals()
     → +6 колонок фундаментальных данных (market_cap, roe, dividend_yield, pe_ratio, pb_ratio, beta)
 
-load_macro_data(start_date, end_date) → DataFrame[Date, usd_rub_hist, cbr_rate, brent_price]
-    → merge по Date → +0–3 макропризнаков (ffill/bfill для выходных)
+load_macro_data(start_date, end_date) → DataFrame[Date, usd_rub_hist, cbr_rate, brent_price, imoex, rtsi]
+    → merge по Date → +0–5 макропризнаков (ffill/bfill для выходных)
     → Granger pre-screening: признаки с p ≥ 0.05 исключаются из features
 
-DataFrame (36–39 признаков) → MinMaxScaler → нормализованный массив
-    → скользящее окно LOOK_BACK=30 → X (N, 30, 36–39), y (N,)
+DataFrame (36–41 признаков) → MinMaxScaler → нормализованный массив
+    → скользящее окно LOOK_BACK=30 → X (N, 30, 36–41), y (N,)
 
 X, y → Optuna (опционально) → best_lstm_params, best_xgb_params
     → сохранение в {TICKER}_hyperparams.json

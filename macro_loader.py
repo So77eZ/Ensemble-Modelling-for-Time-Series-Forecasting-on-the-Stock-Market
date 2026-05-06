@@ -160,6 +160,67 @@ def _load_moex_brent(start: str, end: str) -> pd.Series:
     return s
 
 
+def _load_moex_index(index_id: str, start: str, end: str) -> pd.Series:
+    """Цена закрытия индекса MOEX (IMOEX, RTSI) через MOEX ISS candles API.
+
+    Запросы разбиты по годам: ~250 торговых дней/год < 500 (лимит MOEX ISS).
+    """
+    col_name = index_id.lower()
+    start_dt = datetime.strptime(start, '%Y-%m-%d')
+    end_dt   = datetime.strptime(end,   '%Y-%m-%d')
+
+    all_frames = []
+    year = start_dt.year
+
+    while year <= end_dt.year:
+        chunk_start = max(start_dt, datetime(year, 1, 1)).strftime('%Y-%m-%d')
+        chunk_end   = min(end_dt,   datetime(year, 12, 31)).strftime('%Y-%m-%d')
+        url = (
+            f"https://iss.moex.com/iss/history/engines/stock/markets/index"
+            f"/boards/SNDX/securities/{index_id}/candles.json"
+        )
+        try:
+            resp = requests.get(
+                url,
+                params={'interval': 24, 'from': chunk_start, 'till': chunk_end, 'iss.meta': 'off'},
+                timeout=15,
+                verify=certifi.where(),
+            )
+            if resp.status_code == 200:
+                j = resp.json()
+                cols = j['candles']['columns']
+                rows = j['candles']['data']
+                if rows:
+                    ci = next((i for i, c in enumerate(cols) if c.lower() == 'close'), None)
+                    di = next((i for i, c in enumerate(cols) if c.lower() in ('begin', 'tradedate')), None)
+                    if ci is not None and di is not None:
+                        filtered = [r for r in rows if r[ci] is not None]
+                        if filtered:
+                            all_frames.append(pd.DataFrame({
+                                'Date':    pd.to_datetime([r[di][:10] for r in filtered]),
+                                col_name:  [float(r[ci]) for r in filtered],
+                            }))
+        except Exception:
+            pass
+        year += 1
+
+    if not all_frames:
+        logger.warning(f"{col_name}: MOEX {index_id} index unavailable — feature excluded")
+        return pd.Series(dtype=float)
+
+    combined = (
+        pd.concat(all_frames)
+        .sort_values('Date')
+        .drop_duplicates('Date', keep='first')
+    )
+    s = pd.Series(combined[col_name].values, index=combined['Date'].values, name=col_name)
+    logger.info(
+        f"{col_name}: {len(s)} записей {pd.Timestamp(s.index.min()).date()} — {pd.Timestamp(s.index.max()).date()}"
+        f", диапазон {s.min():.2f}–{s.max():.2f}"
+    )
+    return s
+
+
 # ── публичный интерфейс ───────────────────────────────────────────────────────
 
 def load_macro_data(start_date: str, end_date: str) -> pd.DataFrame:
@@ -167,7 +228,7 @@ def load_macro_data(start_date: str, end_date: str) -> pd.DataFrame:
     Загружает макроэкономические признаки за период [start_date, end_date].
 
     Возвращает DataFrame с колонками:
-        Date, usd_rub_hist, cbr_rate, brent_price
+        Date, usd_rub_hist, cbr_rate, brent_price, imoex, rtsi
 
     Все даты в диапазоне присутствуют; пропуски заполнены ffill/bfill.
     При недоступности источника колонка содержит NaN и логируется warning.
@@ -180,6 +241,8 @@ def load_macro_data(start_date: str, end_date: str) -> pd.DataFrame:
         'usd_rub_hist': _load_cbr_usd_rub_history,
         'cbr_rate':     _load_cbr_key_rate,
         'brent_price':  _load_moex_brent,
+        'imoex':        lambda s, e: _load_moex_index('IMOEX', s, e),
+        'rtsi':         lambda s, e: _load_moex_index('RTSI',  s, e),
     }
 
     for col, loader in loaders.items():

@@ -9,7 +9,7 @@
 - **Walk-forward валидация** — 3 сплита с расширяющимся окном, предотвращает data leakage.
 - **MIMO (Direct Multi-Step Forecasting)** — отдельная модель на каждый горизонт, нет накопления ошибки авторегрессии.
 - **Bayesian hyperparameter search (Optuna)** — прогресс-бар в консоли; персистентность результатов в JSON.
-- **Time-varying макропризнаки** — USD/RUB (ЦБ РФ XML), ставка ЦБ (SOAP), Brent (MOEX ISS BRN); Granger pre-screening исключает незначимые.
+- **Time-varying макропризнаки** — USD/RUB (ЦБ РФ XML), ставка ЦБ (SOAP), Brent (MOEX ISS BRN), IMOEX и RTSI (MOEX ISS candles); Granger pre-screening исключает незначимые.
 - **Признаки сезонности** — day_of_week, month, quarter; автоматически нормализуются MinMaxScaler.
 - **Автосклейка YNDX+YDEX** — для реструктурированных тикеров история собирается из двух листингов без ручного вмешательства.
 - **Статистическая диагностика** — Ljung-Box на OOS-остатках, Granger causality на топ-15 признаках.
@@ -46,9 +46,7 @@
 
 **В работе (запланировано)**
 
-- **Рыночные индексы IMOEX/RTS как признаки** — акции двигаются вместе с рынком сильнее, чем от собственных индикаторов; IMOEX и RTS грузятся с MOEX ISS как дополнительные time-varying признаки; аналогично Brent через `macro_loader.py`
 - **Ensemble по seeds (N=3–5)** — обучить LSTM с разными seed, усреднить предсказания; стабилизирует метрики без изменения архитектуры; время прогона ×N
-- **Optuna для Ridge alpha** — сейчас `alpha=1.0` зафиксирован; поиск оптимального alpha через Optuna за 10–20 итераций; минимальное изменение пайплайна
 
 **Средний приоритет**
 
@@ -86,6 +84,14 @@
 ---
 
 ## Архив (реализовано)
+
+### v15.7 — IMOEX и RTSI как признаки
+
+- **✅ v15.7 — Рыночные индексы IMOEX/RTSI** — `_load_moex_index(index_id, start, end)` в `macro_loader.py`; годовые запросы к MOEX ISS candles (engines/stock/markets/index/boards/SNDX); `imoex` и `rtsi` добавлены в `_MACRO_COLS`; Granger pre-screening автоматически исключает незначимые; вектор признаков: 36–39 → 36–41 динамически
+
+### v15.6 — Optuna оптимизация Ridge alpha
+
+- **✅ v15.6 — Optuna для Ridge alpha** — функция `optimize_ridge_alpha(meta_features, y_true, n_trials=20)`; log-uniform поиск alpha ∈ [1e-3, 100] за 20 итераций Optuna; оценка через 5-fold CV на OOS-предсказаниях walk-forward; финальный Ridge дообучается с best_alpha на данных последнего сплита; на 2 входных признаках best_alpha стремится к нулю (≈ 0.001–0.02), Ridge вырождается в OLS
 
 ### v15.5 — оптимизация загрузки, UX и кросс-тикерные бэктесты
 
