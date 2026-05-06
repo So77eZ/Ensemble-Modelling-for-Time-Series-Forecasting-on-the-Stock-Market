@@ -1143,20 +1143,24 @@ def run_benchmark(data) -> dict:
     for res in results_list:
         h = res['horizon']
         horizons[h] = {
-            'forecast':  res['forecast'],
-            'real':      res['real'],
-            'error_pct': res['error_pct'],
-            'in_ci':     res['in_ci'],
-            'rmse':      all_results[h][6],
-            'mae':       all_results[h][7],
-            'r2':        all_results[h][8],
+            'forecast':    res['forecast'],
+            'real':        res['real'],
+            'error_pct':   res['error_pct'],
+            'in_ci':       res['in_ci'],
+            'dir_correct': res['dir_correct'],
+            'forecast_dir': res['forecast_dir'],
+            'real_dir':    res['real_dir'],
+            'rmse':        all_results[h][6],
+            'mae':         all_results[h][7],
+            'r2':          all_results[h][8],
         }
 
-    avg_rmse      = sum(horizons[h]['rmse']      for h in [1, 2, 3]) / 3
-    avg_mae       = sum(horizons[h]['mae']       for h in [1, 2, 3]) / 3
-    avg_r2        = sum(horizons[h]['r2']        for h in [1, 2, 3]) / 3
-    avg_error_pct = sum(horizons[h]['error_pct'] for h in [1, 2, 3]) / 3
-    ci_coverage   = sum(horizons[h]['in_ci']     for h in [1, 2, 3]) / 3 * 100
+    avg_rmse      = sum(horizons[h]['rmse']        for h in [1, 2, 3]) / 3
+    avg_mae       = sum(horizons[h]['mae']         for h in [1, 2, 3]) / 3
+    avg_r2        = sum(horizons[h]['r2']          for h in [1, 2, 3]) / 3
+    avg_error_pct = sum(horizons[h]['error_pct']   for h in [1, 2, 3]) / 3
+    ci_coverage   = sum(horizons[h]['in_ci']       for h in [1, 2, 3]) / 3 * 100
+    dir_accuracy  = sum(horizons[h]['dir_correct'] for h in [1, 2, 3]) / 3 * 100
 
     return {
         'version':       MODEL_VERSION,
@@ -1167,6 +1171,7 @@ def run_benchmark(data) -> dict:
         'avg_r2':        avg_r2,
         'avg_error_pct': avg_error_pct,
         'ci_coverage':   ci_coverage,
+        'dir_accuracy':  dir_accuracy,
     }
 
 # ============================================================================
@@ -1370,14 +1375,17 @@ if __name__ == '__main__':
         print("=" * 60)
         for h in [1, 2, 3]:
             hd = metrics['horizons'][h]
-            ci_mark = "[ok]" if hd['in_ci'] else "[no]"
+            ci_mark  = "[ok]" if hd['in_ci']       else "[no]"
+            dir_mark = "[ok]" if hd['dir_correct']  else "[no]"
             print(f"  h={h}: прогноз {hd['forecast']:.2f} / реал {hd['real']:.2f} "
-                  f"/ ошибка {hd['error_pct']:.2f}% / CI {ci_mark}")
+                  f"/ ошибка {hd['error_pct']:.2f}% / CI {ci_mark} "
+                  f"/ направление {hd['forecast_dir']} {dir_mark}")
         print(f"  avg RMSE: {metrics['avg_rmse']:.2f} | "
               f"avg MAE: {metrics['avg_mae']:.2f} | "
               f"avg R2: {metrics['avg_r2']:.3f} | "
               f"avg Ошибка%: {metrics['avg_error_pct']:.2f}%")
-        print(f"  CI coverage: {metrics['ci_coverage']:.0f}%")
+        print(f"  CI coverage: {metrics['ci_coverage']:.0f}% | "
+              f"Direction Accuracy: {metrics['dir_accuracy']:.0f}%")
         print(f"\nРезультаты записаны: {out_path}")
         print("=" * 60)
         exit(0)
