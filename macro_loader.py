@@ -32,7 +32,12 @@ def _load_cbr_usd_rub_history(start: str, end: str) -> pd.Series:
                 rates.append(float(val_node.text.replace(',', '.')))
         if not dates:
             raise ValueError("empty response")
-        return pd.Series(rates, index=pd.to_datetime(dates), name='usd_rub_hist')
+        s = pd.Series(rates, index=pd.to_datetime(dates), name='usd_rub_hist')
+        logger.info(
+            f"usd_rub_hist: {len(s)} записей {s.index.min().date()} — {s.index.max().date()}"
+            f", диапазон {s.min():.2f}–{s.max():.2f} руб."
+        )
+        return s
     except Exception as e:
         logger.warning(f"usd_rub_hist: CBR USD/RUB history unavailable ({e})")
         return pd.Series(dtype=float)
@@ -73,7 +78,12 @@ def _load_cbr_key_rate(start: str, end: str) -> pd.Series:
                 rates.append(float(rate_el.text))
         if not dates:
             raise ValueError("empty SOAP response")
-        return pd.Series(rates, index=pd.DatetimeIndex(dates), name='cbr_rate')
+        s = pd.Series(rates, index=pd.DatetimeIndex(dates), name='cbr_rate')
+        logger.info(
+            f"cbr_rate: {len(s)} записей {s.index.min().date()} — {s.index.max().date()}"
+            f", диапазон {s.min():.2f}%–{s.max():.2f}%"
+        )
+        return s
     except Exception as e:
         logger.warning(f"cbr_rate: CBR key rate unavailable ({e})")
         return pd.Series(dtype=float)
@@ -142,11 +152,12 @@ def _load_moex_brent(start: str, end: str) -> pd.Series:
         .sort_values('Date')
         .drop_duplicates('Date', keep='first')
     )
-    return pd.Series(
-        combined['brent_price'].values,
-        index=combined['Date'].values,
-        name='brent_price'
+    s = pd.Series(combined['brent_price'].values, index=combined['Date'].values, name='brent_price')
+    logger.info(
+        f"brent_price: {len(s)} записей {pd.Timestamp(s.index.min()).date()} — {pd.Timestamp(s.index.max()).date()}"
+        f", диапазон {s.min():.2f}–{s.max():.2f} руб."
     )
+    return s
 
 
 # ── публичный интерфейс ───────────────────────────────────────────────────────

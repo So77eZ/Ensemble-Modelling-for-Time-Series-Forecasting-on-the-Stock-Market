@@ -594,7 +594,7 @@ def optimize_xgboost_params(X_train, y_train, n_trials=20):
 # MODEL TRAINING
 # ============================================================================
 
-def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_params, backtest_mode=False, backtest_date=None, horizon: int = 1, ci_mode: str = 'wide'):
+def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_params, backtest_mode=False, backtest_date=None, horizon: int = 1, ci_mode: str = 'wide', macro_data=None):
     logger.info("=" * 60)
     logger.info(f"PREPARING DATA FOR {ticker}")
     if backtest_mode:
@@ -612,9 +612,10 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         data[key] = value
 
     # Макроэкономические time-varying признаки
-    macro_start = data['Date'].min().strftime('%Y-%m-%d')
-    logger.info("Loading macro data (USD/RUB history, CBR key rate, Brent)...")
-    macro_data = load_macro_data(macro_start, end_date)
+    if macro_data is None:
+        macro_start = data['Date'].min().strftime('%Y-%m-%d')
+        logger.info("Loading macro data (USD/RUB history, CBR key rate, Brent)...")
+        macro_data = load_macro_data(macro_start, end_date)
     data['Date'] = pd.to_datetime(data['Date']).dt.normalize()
     data = data.merge(macro_data, on='Date', how='left')
     data = data.ffill().bfill()
@@ -647,7 +648,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     from statsmodels.tsa.stattools import grangercausalitytests as _gct
     for _mc in [c for c in _MACRO_COLS if c in features]:
         try:
-            _gr = _gct(data[['Close', _mc]].dropna(), maxlag=5, verbose=False)
+            _gr = _gct(data[['Close', _mc]].dropna(), maxlag=5)
             _p  = min(r[0]['ssr_ftest'][1] for r in _gr.values())
             if _p >= 0.05:
                 features.remove(_mc)
@@ -770,7 +771,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         print("Granger causality (top-15 features -> Close, maxlag=5):")
         for feat in top15:
             try:
-                result = grangercausalitytests(data[['Close', feat]].dropna(), maxlag=5, verbose=False)
+                result = grangercausalitytests(data[['Close', feat]].dropna(), maxlag=5)
                 min_pval = min(res[0]['ssr_ftest'][1] for res in result.values())
                 gc_flag = "[ok]" if min_pval < 0.05 else "[no]"
                 msg = f"  Close <- {feat:<22}: p={min_pval:.3f} {gc_flag}"
@@ -953,6 +954,10 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
     logger.info(f"Future data dates: {future_data['Date'].min()} to {future_data['Date'].max()}")
     
     # Обучаем модель на данных до backtest_date для трех горизонтов
+    macro_start = data['Date'].min().strftime('%Y-%m-%d')
+    logger.info("Loading macro data once for all horizons...")
+    shared_macro = load_macro_data(macro_start, backtest_date)
+
     all_results = {}
     for h in [1, 2, 3]:
         all_results[h] = prepare_and_train_model(
@@ -960,7 +965,8 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
             best_lstm_params, best_xgb_params,
             backtest_mode=True, backtest_date=backtest_date,
             horizon=h,
-            ci_mode=ci_mode
+            ci_mode=ci_mode,
+            macro_data=shared_macro,
         )
 
     merged = merge_horizon_results(all_results)
@@ -1425,7 +1431,7 @@ if __name__ == '__main__':
         from statsmodels.tsa.stattools import grangercausalitytests as _gct
         for _mc in [c for c in _MACRO_COLS if c in features]:
             try:
-                _gr = _gct(data_for_opt[['Close', _mc]].dropna(), maxlag=5, verbose=False)
+                _gr = _gct(data_for_opt[['Close', _mc]].dropna(), maxlag=5)
                 _p  = min(r[0]['ssr_ftest'][1] for r in _gr.values())
                 if _p >= 0.05:
                     features.remove(_mc)
@@ -1544,6 +1550,10 @@ if __name__ == '__main__':
 
     else:
         # Обычный режим прогноза
+        _macro_start = data['Date'].min().strftime('%Y-%m-%d')
+        logger.info("Loading macro data once for all horizons...")
+        _shared_macro = load_macro_data(_macro_start, end_date)
+
         all_results = {}
         for h in [1, 2, 3]:
             all_results[h] = prepare_and_train_model(
@@ -1551,7 +1561,8 @@ if __name__ == '__main__':
                 best_lstm_params, best_xgb_params,
                 backtest_mode=False,
                 horizon=h,
-                ci_mode=ci_mode
+                ci_mode=ci_mode,
+                macro_data=_shared_macro,
             )
 
         merged = merge_horizon_results(all_results)
