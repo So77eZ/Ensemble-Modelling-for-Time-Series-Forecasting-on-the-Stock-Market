@@ -160,25 +160,29 @@ def _load_moex_brent(start: str, end: str) -> pd.Series:
     return s
 
 
-def _load_moex_index(index_id: str, start: str, end: str) -> pd.Series:
-    """Цена закрытия индекса MOEX (IMOEX, RTSI) через MOEX ISS candles API.
+def _load_moex_index(index_id: str, start: str, end: str, board: str = 'SNDX') -> pd.Series:
+    """Цена закрытия индекса MOEX через MOEX ISS history candles API.
 
-    Запросы разбиты по годам: ~250 торговых дней/год < 500 (лимит MOEX ISS).
+    Запросы помесячные (~21 торговый день < 100 записей лимит MOEX ISS).
+    board: 'SNDX' для IMOEX, 'RTSI' для RTSI.
     """
     col_name = index_id.lower()
     start_dt = datetime.strptime(start, '%Y-%m-%d')
     end_dt   = datetime.strptime(end,   '%Y-%m-%d')
 
-    all_frames = []
-    year = start_dt.year
+    url = (
+        f"https://iss.moex.com/iss/history/engines/stock/markets/index"
+        f"/boards/{board}/securities/{index_id}/candles.json"
+    )
 
-    while year <= end_dt.year:
-        chunk_start = max(start_dt, datetime(year, 1, 1)).strftime('%Y-%m-%d')
-        chunk_end   = min(end_dt,   datetime(year, 12, 31)).strftime('%Y-%m-%d')
-        url = (
-            f"https://iss.moex.com/iss/history/engines/stock/markets/index"
-            f"/boards/SNDX/securities/{index_id}/candles.json"
-        )
+    all_frames = []
+    year, month = start_dt.year, start_dt.month
+
+    while datetime(year, month, 1) <= end_dt:
+        import calendar
+        last_day = calendar.monthrange(year, month)[1]
+        chunk_start = max(start_dt, datetime(year, month, 1)).strftime('%Y-%m-%d')
+        chunk_end   = min(end_dt,   datetime(year, month, last_day)).strftime('%Y-%m-%d')
         try:
             resp = requests.get(
                 url,
@@ -188,21 +192,25 @@ def _load_moex_index(index_id: str, start: str, end: str) -> pd.Series:
             )
             if resp.status_code == 200:
                 j = resp.json()
-                cols = j['candles']['columns']
-                rows = j['candles']['data']
+                block = j.get('history') or j.get('candles') or {}
+                cols = block.get('columns', [])
+                rows = block.get('data', [])
                 if rows:
                     ci = next((i for i, c in enumerate(cols) if c.lower() == 'close'), None)
-                    di = next((i for i, c in enumerate(cols) if c.lower() in ('begin', 'tradedate')), None)
+                    di = next((i for i, c in enumerate(cols) if c.lower() in ('tradedate', 'begin')), None)
                     if ci is not None and di is not None:
                         filtered = [r for r in rows if r[ci] is not None]
                         if filtered:
                             all_frames.append(pd.DataFrame({
-                                'Date':    pd.to_datetime([r[di][:10] for r in filtered]),
-                                col_name:  [float(r[ci]) for r in filtered],
+                                'Date':   pd.to_datetime([r[di][:10] for r in filtered]),
+                                col_name: [float(r[ci]) for r in filtered],
                             }))
         except Exception:
             pass
-        year += 1
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
 
     if not all_frames:
         logger.warning(f"{col_name}: MOEX {index_id} index unavailable — feature excluded")
@@ -241,8 +249,8 @@ def load_macro_data(start_date: str, end_date: str) -> pd.DataFrame:
         'usd_rub_hist': _load_cbr_usd_rub_history,
         'cbr_rate':     _load_cbr_key_rate,
         'brent_price':  _load_moex_brent,
-        'imoex':        lambda s, e: _load_moex_index('IMOEX', s, e),
-        'rtsi':         lambda s, e: _load_moex_index('RTSI',  s, e),
+        'imoex':        lambda s, e: _load_moex_index('IMOEX', s, e, board='SNDX'),
+        'rtsi':         lambda s, e: _load_moex_index('RTSI',  s, e, board='RTSI'),
     }
 
     for col, loader in loaders.items():
