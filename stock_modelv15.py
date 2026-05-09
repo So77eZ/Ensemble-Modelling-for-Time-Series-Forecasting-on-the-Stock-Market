@@ -669,7 +669,7 @@ def optimize_ridge_alpha(meta_features: np.ndarray, y_true: np.ndarray, n_trials
     def objective(trial):
         alpha = trial.suggest_float('alpha', 1e-3, 100.0, log=True)
         scores = cross_val_score(
-            Ridge(alpha=alpha), meta_features, y_true,
+            Ridge(alpha=alpha, positive=True), meta_features, y_true,
             cv=min(5, len(y_true)), scoring='neg_mean_squared_error'
         )
         return float(-scores.mean())
@@ -916,7 +916,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         meta_train = np.column_stack((lstm_train_preds, xgb_train_preds))
 
         logger.info("Training Meta-Learner (Ridge)...")
-        meta_learner = Ridge(alpha=1.0)
+        meta_learner = Ridge(alpha=1.0, positive=True)
         meta_learner.fit(meta_train, y_train)
         logger.info(f"[OK] Meta-Learner trained | LSTM={meta_learner.coef_[0]:.3f}, XGB={meta_learner.coef_[1]:.3f}")
         last_meta_train = meta_train
@@ -961,7 +961,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     best_alpha = optimize_ridge_alpha(oos_meta_all, oos_y_all, n_trials=20)
     logger.info(f"[OK] Best Ridge alpha: {best_alpha:.4f}")
     if last_meta_train is not None:
-        best_meta = Ridge(alpha=best_alpha)
+        best_meta = Ridge(alpha=best_alpha, positive=True)
         best_meta.fit(last_meta_train, last_y_train)
         logger.info(f"[OK] Final Ridge retrained | LSTM={best_meta.coef_[0]:.3f}, XGB={best_meta.coef_[1]:.3f}")
         lstm_ms, xgb_m, _ = models[-1]
