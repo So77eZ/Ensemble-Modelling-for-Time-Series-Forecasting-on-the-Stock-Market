@@ -48,6 +48,7 @@ from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.optimizers import Adam
 
 RANDOM_SEED = 42
+ENSEMBLE_SEEDS = [42, 7, 123]   # N=3 LSTM с разными инициализациями
 random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 tf.random.set_seed(RANDOM_SEED)
@@ -780,36 +781,37 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         X_test, y_test = X[train_end:test_end], y[train_end:test_end]
         logger.info(f"Train size: {len(X_train)}, Test size: {len(X_test)}")
 
-        logger.info("Training LSTM model...")
-        lstm_model = Sequential()
-        lstm_model.add(Input(shape=(X_train.shape[1], X_train.shape[2])))
-        
+        logger.info(f"Training LSTM ensemble ({len(ENSEMBLE_SEEDS)} seeds)...")
         lstm_units_1 = best_lstm_params['units']
         lstm_units_2 = max(32, lstm_units_1 // 2)
-        lstm_model.add(LSTM(units=lstm_units_1, return_sequences=True))
-        lstm_model.add(Dropout(best_lstm_params['dropout']))
-        lstm_model.add(LSTM(units=lstm_units_2, return_sequences=True))
-        lstm_model.add(Dropout(best_lstm_params['dropout'] * 0.5))
-        lstm_model.add(LSTM(units=lstm_units_2))
-        lstm_model.add(Dropout(best_lstm_params['dropout']))
-        lstm_model.add(Dense(32, activation='relu'))
-        lstm_model.add(Dense(1))
-
-        optimizer = Adam(learning_rate=best_lstm_params['lr'])
-        lstm_model.compile(optimizer=optimizer, loss='mean_squared_error')
-
-        early_stop = EarlyStopping(monitor='val_loss', patience=LSTM_PATIENCE, restore_best_weights=True)
-        history = lstm_model.fit(
-            X_train, y_train,
-            epochs=LSTM_EPOCHS,
-            batch_size=LSTM_BATCH_SIZE,
-            validation_split=0.2,
-            callbacks=[early_stop],
-            verbose=0
-        )
-        train_loss = history.history['loss'][-1]
-        val_loss = history.history['val_loss'][-1]
-        logger.info(f"No overfitting: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
+        lstm_models_split = []
+        for _seed in ENSEMBLE_SEEDS:
+            tf.random.set_seed(_seed)
+            np.random.seed(_seed)
+            _m = Sequential()
+            _m.add(Input(shape=(X_train.shape[1], X_train.shape[2])))
+            _m.add(LSTM(units=lstm_units_1, return_sequences=True))
+            _m.add(Dropout(best_lstm_params['dropout']))
+            _m.add(LSTM(units=lstm_units_2, return_sequences=True))
+            _m.add(Dropout(best_lstm_params['dropout'] * 0.5))
+            _m.add(LSTM(units=lstm_units_2))
+            _m.add(Dropout(best_lstm_params['dropout']))
+            _m.add(Dense(32, activation='relu'))
+            _m.add(Dense(1))
+            _m.compile(optimizer=Adam(learning_rate=best_lstm_params['lr']), loss='mean_squared_error')
+            _early = EarlyStopping(monitor='val_loss', patience=LSTM_PATIENCE, restore_best_weights=True)
+            _hist = _m.fit(
+                X_train, y_train,
+                epochs=LSTM_EPOCHS,
+                batch_size=LSTM_BATCH_SIZE,
+                validation_split=0.2,
+                callbacks=[_early],
+                verbose=0
+            )
+            lstm_models_split.append(_m)
+            logger.info(f"  seed={_seed}: train={_hist.history['loss'][-1]:.4f}, val={_hist.history['val_loss'][-1]:.4f}")
+        tf.random.set_seed(RANDOM_SEED)
+        np.random.seed(RANDOM_SEED)
 
         logger.info("Training XGBoost model...")
         xgb_params = {
@@ -856,7 +858,9 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
             logger.info(msg)
 
         logger.info("Generating level 0 predictions...")
-        lstm_train_preds = lstm_model.predict(X_train, verbose=0).flatten()
+        lstm_train_preds = np.mean(
+            [_m.predict(X_train, verbose=0).flatten() for _m in lstm_models_split], axis=0
+        )
         xgb_train_preds = xgb_model.predict(X_train_flat)
 
         meta_train = np.column_stack((lstm_train_preds, xgb_train_preds))
@@ -868,7 +872,9 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         last_meta_train = meta_train
         last_y_train = y_train
 
-        lstm_test_preds = lstm_model.predict(X_test, verbose=0).flatten()
+        lstm_test_preds = np.mean(
+            [_m.predict(X_test, verbose=0).flatten() for _m in lstm_models_split], axis=0
+        )
         X_test_flat = X_test.reshape(X_test.shape[0], -1)
         xgb_test_preds = xgb_model.predict(X_test_flat)
         meta_test = np.column_stack((lstm_test_preds, xgb_test_preds))
@@ -891,7 +897,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         r2s.append(r2)
 
         final_pred.extend(test_preds_inv)
-        models.append((lstm_model, xgb_model, meta_learner))
+        models.append((lstm_models_split, xgb_model, meta_learner))
 
     avg_rmse = np.mean(rmses)
     avg_mae = np.mean(maes)
@@ -908,8 +914,8 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         best_meta = Ridge(alpha=best_alpha)
         best_meta.fit(last_meta_train, last_y_train)
         logger.info(f"[OK] Final Ridge retrained | LSTM={best_meta.coef_[0]:.3f}, XGB={best_meta.coef_[1]:.3f}")
-        lstm_m, xgb_m, _ = models[-1]
-        models[-1] = (lstm_m, xgb_m, best_meta)
+        lstm_ms, xgb_m, _ = models[-1]
+        models[-1] = (lstm_ms, xgb_m, best_meta)
 
     # CI-модели обучаются на OOS-остатках всех walk-forward сплитов.
     # OOS-остатки (actual − pred на тестовых окнах) честно отражают погрешность
@@ -950,7 +956,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     )
     logger.info("✓ CI quantile models trained")
 
-    best_model, best_xgb_model, best_meta_learner = models[-1]
+    best_lstm_ensemble, best_xgb_model, best_meta_learner = models[-1]
 
     logger.info("Generating forecasts...")
     forecasts = {}
@@ -968,10 +974,10 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     last_scaled = scaler.transform(last_features)
     last_scaled_df = pd.DataFrame(last_scaled, columns=features, index=last_features.index)
 
-    lstm_pred_scaled = best_model.predict(
-        last_scaled_df.values.reshape(1, LSTM_LOOK_BACK, len(features)),
-        verbose=0
-    )[0][0]
+    _input = last_scaled_df.values.reshape(1, LSTM_LOOK_BACK, len(features))
+    lstm_pred_scaled = float(np.mean(
+        [_m.predict(_input, verbose=0)[0][0] for _m in best_lstm_ensemble]
+    ))
 
     current_scaled_flat = last_scaled.reshape(1, -1)
     xgb_pred_scaled = best_xgb_model.predict(current_scaled_flat)[0]
