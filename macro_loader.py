@@ -341,19 +341,27 @@ def load_macro_data(start_date: str, end_date: str) -> pd.DataFrame:
         refresh_from = cached_end - pd.Timedelta(days=_CACHE_REFRESH_DAYS)
 
         if cached['Date'].min() <= start_dt and cached_end >= end_dt:
-            # Кэш полностью покрывает запрос — только обновляем свежую зону
-            fetch_start = max(refresh_from, start_dt)
-            logger.info(
-                f"macro cache hit: покрыт {cached['Date'].min().date()}–{cached_end.date()}, "
-                f"обновляем {fetch_start.date()}–{end_dt.date()}"
-            )
-            fresh = _fetch_range(fetch_start.strftime('%Y-%m-%d'), end_date)
-            merged = (
-                pd.concat([cached[cached['Date'] < fetch_start], fresh])
-                .sort_values('Date')
-                .drop_duplicates('Date', keep='last')
-                .reset_index(drop=True)
-            )
+            if end_dt <= refresh_from:
+                # Исторический бэктест — end_date глубоко в прошлом, обновлять нечего
+                logger.info(
+                    f"macro cache hit (historical): покрыт {cached['Date'].min().date()}–{cached_end.date()}, "
+                    f"запрос {start_dt.date()}–{end_dt.date()} — обновление не требуется"
+                )
+                merged = cached
+            else:
+                # end_date свежий — обновляем последние CACHE_REFRESH_DAYS дней
+                fetch_start = max(refresh_from, start_dt)
+                logger.info(
+                    f"macro cache hit: покрыт {cached['Date'].min().date()}–{cached_end.date()}, "
+                    f"обновляем {fetch_start.date()}–{end_dt.date()}"
+                )
+                fresh = _fetch_range(fetch_start.strftime('%Y-%m-%d'), end_date)
+                merged = (
+                    pd.concat([cached[cached['Date'] < fetch_start], fresh])
+                    .sort_values('Date')
+                    .drop_duplicates('Date', keep='last')
+                    .reset_index(drop=True)
+                )
             _cache_save(merged)
         else:
             # Кэш не покрывает весь диапазон — дозагружаем недостающее

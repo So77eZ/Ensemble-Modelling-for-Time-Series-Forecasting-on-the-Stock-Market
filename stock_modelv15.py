@@ -334,7 +334,6 @@ class TinkoffFundamentalLoader:
                 timeout=10,
                 verify=False
             )
-            logger.info(f"RAW API RESPONSE: {resp.text[:500]}...")
             if resp.status_code != 200:
                 logger.error(f"API Error (Fundamentals): {resp.status_code}")
                 return self._get_empty_fundamentals()
@@ -720,6 +719,12 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     from statsmodels.tsa.stattools import grangercausalitytests as _gct
     _granger_cols = [c for c in _MACRO_COLS + _FUND_DIV_COLS if c in features]
     for _mc in _granger_cols:
+        # Исключаем константные признаки (NaN или нулевая дисперсия) — Granger на них не работает
+        _col_data = data[_mc].dropna()
+        if _col_data.empty or _col_data.std() == 0:
+            features.remove(_mc)
+            logger.info(f"Granger screening: {_mc} excluded (constant/empty column)")
+            continue
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 _gr = _gct(data[['Close', _mc]].dropna(), maxlag=5)
@@ -730,7 +735,8 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
             else:
                 logger.info(f"Granger screening: {_mc} retained (p={_p:.3f})")
         except Exception as e:
-            logger.warning(f"Granger screening: {_mc} error ({e}), keeping feature")
+            features.remove(_mc)
+            logger.warning(f"Granger screening: {_mc} excluded (error: {e})")
 
     data = data[['Date'] + features].dropna()
     
@@ -1575,6 +1581,10 @@ if __name__ == '__main__':
         # Granger-скрининг для Optuna: те же правила, что и в основной ветке
         from statsmodels.tsa.stattools import grangercausalitytests as _gct
         for _mc in [c for c in _MACRO_COLS + _FUND_DIV_COLS if c in features]:
+            _col_data = data_for_opt[_mc].dropna()
+            if _col_data.empty or _col_data.std() == 0:
+                features.remove(_mc)
+                continue
             try:
                 with contextlib.redirect_stdout(io.StringIO()):
                     _gr = _gct(data_for_opt[['Close', _mc]].dropna(), maxlag=5)
@@ -1582,7 +1592,7 @@ if __name__ == '__main__':
                 if _p >= 0.05:
                     features.remove(_mc)
             except Exception:
-                pass
+                features.remove(_mc)
 
         # В режиме бэктеста оптимизируем только на данных до backtest_date
         if backtest_mode:
