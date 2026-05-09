@@ -19,6 +19,7 @@ import json
 import contextlib
 import io
 import random
+import time
 import matplotlib
 import argparse
 
@@ -402,55 +403,85 @@ tinkoff_loader = TinkoffFundamentalLoader(tinkoff_token) if tinkoff_token else N
 # ============================================================================
 
 def _load_single_ticker(ticker_symbol, start_date, end_date):
-    try:
-        from moexalgo import Ticker
-        stock = Ticker(ticker_symbol)
-        data = stock.candles(start=start_date, end=end_date, period='1D')
-        if not data.empty:
-            data = data[['begin', 'open', 'high', 'low', 'close', 'volume']]
-            data.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
-            data['Date'] = pd.to_datetime(data['Date']).dt.tz_localize(None)
-            logger.info(f" -> moexalgo {ticker_symbol}: {len(data)} rows ({data['Date'].min()} to {data['Date'].max()})")
-            return data
-    except Exception as e:
-        logger.warning(f" moexalgo error ({ticker_symbol}): {e}. Switching to direct API...")
+    # moexalgo with retry (SSL EOF is transient)
+    _RETRIES = 3
+    for attempt in range(_RETRIES):
+        try:
+            from moexalgo import Ticker
+            stock = Ticker(ticker_symbol)
+            data = stock.candles(start=start_date, end=end_date, period='1D')
+            if not data.empty:
+                data = data[['begin', 'open', 'high', 'low', 'close', 'volume']]
+                data.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+                data['Date'] = pd.to_datetime(data['Date']).dt.tz_localize(None)
+                logger.info(f" -> moexalgo {ticker_symbol}: {len(data)} rows ({data['Date'].min()} to {data['Date'].max()})")
+                return data
+            break
+        except Exception as e:
+            if attempt < _RETRIES - 1:
+                delay = 2 ** attempt
+                logger.warning(f" moexalgo attempt {attempt+1}/{_RETRIES} ({ticker_symbol}): {e}. Retry in {delay}s...")
+                time.sleep(delay)
+            else:
+                logger.warning(f" moexalgo error ({ticker_symbol}): {e}. Switching to direct API...")
 
+    # Direct MOEX ISS API — try with SSL verification first, then without
     base_url = (
         "https://iss.moex.com/iss/history/engines/stock/markets/shares/boards/TQBR/"
         f"securities/{ticker_symbol}.json"
     )
     params = {'from': start_date, 'till': end_date, 'limit': 100}
-    all_data = []
-    start = 0
 
-    while True:
-        params['start'] = start
-        try:
-            response = requests.get(base_url, params=params, timeout=10)
-            response.raise_for_status()
-            json_data = response.json()
-            columns = json_data['history']['columns']
-            rows = json_data['history']['data']
-            if not rows:
+    for verify_ssl in [True, False]:
+        all_data = []
+        offset = 0
+        fetch_ok = True
+
+        while True:
+            params['start'] = offset
+            chunk_ok = False
+            for attempt in range(_RETRIES):
+                try:
+                    response = requests.get(base_url, params=params, timeout=15, verify=verify_ssl)
+                    response.raise_for_status()
+                    json_data = response.json()
+                    columns = json_data['history']['columns']
+                    rows = json_data['history']['data']
+                    if not rows:
+                        chunk_ok = None  # sentinel: pagination done
+                    else:
+                        all_data.append(pd.DataFrame(rows, columns=columns))
+                        offset += len(rows)
+                        chunk_ok = True
+                    break
+                except Exception as e:
+                    if attempt < _RETRIES - 1:
+                        time.sleep(2 ** attempt)
+                    else:
+                        logger.warning(f"Direct MOEX API error ({ticker_symbol}): {e}")
+                        fetch_ok = False
+
+            if chunk_ok is None or not fetch_ok:
                 break
-            df_chunk = pd.DataFrame(rows, columns=columns)
-            all_data.append(df_chunk)
-            start += len(rows)
-        except Exception as e:
-            logger.warning(f"Direct MOEX API error ({ticker_symbol}): {e}")
-            break
 
-    if all_data:
-        data = pd.concat(all_data, ignore_index=True)
-        data = data[['TRADEDATE', 'OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME']]
-        data.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
-        data['Date'] = pd.to_datetime(data['Date'])
-        data = data.sort_values('Date').drop_duplicates()
-        logger.info(f" -> REST {ticker_symbol}: {len(data)} rows ({data['Date'].min()} to {data['Date'].max()})")
-        return data
-    else:
-        logger.error(f"Could not load data for {ticker_symbol}")
-        return None
+        if all_data:
+            data = pd.concat(all_data, ignore_index=True)
+            data = data[['TRADEDATE', 'OPEN', 'HIGH', 'LOW', 'CLOSE', 'VOLUME']]
+            data.columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+            data['Date'] = pd.to_datetime(data['Date'])
+            data = data.sort_values('Date').drop_duplicates()
+            if not verify_ssl:
+                logger.warning(f" -> REST {ticker_symbol}: SSL verify=False (network fallback)")
+            logger.info(f" -> REST {ticker_symbol}: {len(data)} rows ({data['Date'].min()} to {data['Date'].max()})")
+            return data
+
+        if verify_ssl and not fetch_ok:
+            logger.warning(f"Direct MOEX SSL error ({ticker_symbol}), retrying without SSL verification...")
+        else:
+            break  # no SSL error but empty data (ticker not found), or verify=False exhausted
+
+    logger.error(f"Could not load data for {ticker_symbol}")
+    return None
 
 
 def load_stock_data_moex_test(ticker_symbol, start_date, end_date):
