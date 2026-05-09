@@ -987,12 +987,52 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     if lb_lags >= 2:
         lb = acorr_ljungbox(oos_residuals_centered, lags=lb_lags, return_df=True)
         min_pval = lb['lb_pvalue'].min()
-        lb_flag = "автокорреляция обнаружена" if min_pval < 0.05 else "остатки некоррелированы"
+        # Сначала проверяем гетероскедастичность (LB на |res| ≈ ARCH-тест) —
+        # волатильность кластерами это норма для финансовых рядов, не баг.
+        lb_abs = acorr_ljungbox(np.abs(oos_residuals_centered), lags=lb_lags, return_df=True)
+        abs_min_pval = lb_abs['lb_pvalue'].min()
+        # Лаг минимума автокорреляции: короткие (1–3) = momentum, длинные = месячная структура
+        worst_lag = int(lb['lb_pvalue'].idxmin())
+        if min_pval < 0.05:
+            if abs_min_pval < 0.05 and worst_lag >= 5:
+                # классический ARCH-эффект: автокорр на длинных лагах + в |res|
+                lb_flag = "ARCH-эффект (норма для фин. рядов; CI постоянной ширины)"
+            elif worst_lag <= 3:
+                lb_flag = f"momentum в среднем (lag={worst_lag}) — структура не учтена"
+            else:
+                lb_flag = f"автокорр на lag={worst_lag} (длинная структура / макро-лаг)"
+        else:
+            lb_flag = "остатки некоррелированы"
         lb_msg = f"Ljung-Box ({lb_lags} лагов): p-min={min_pval:.3f} [{lb_flag}]"
+        # топ-3 «худших» лага: где автокорреляция самая значимая
+        worst = lb.nsmallest(3, 'lb_pvalue')
+        worst_str = ", ".join(f"lag={int(idx)} p={row.lb_pvalue:.3f}"
+                              for idx, row in worst.iterrows())
+        lb_top_msg = f"  топ-3 лагов: {worst_str}"
+        abs_flag = ("гетероскедастичность (волатильность кластерами)"
+                    if abs_min_pval < 0.05 else "дисперсия стационарна")
+        lb_abs_msg = f"  Ljung-Box на |res|: p-min={abs_min_pval:.3f} [{abs_flag}]"
+        # per-fold: чисто ли внутри каждого сплита, или проблема в склейке
+        fold_pvals = []
+        for i, fold_res in enumerate(oos_residuals_list, 1):
+            fr = np.asarray(fold_res, dtype=float)
+            fr = fr - np.median(fr)
+            fl = min(20, len(fr) // 2)
+            if fl >= 2:
+                lb_f = acorr_ljungbox(fr, lags=fl, return_df=True)
+                fold_pvals.append(f"fold{i}: p-min={lb_f['lb_pvalue'].min():.3f} (n={len(fr)})")
+            else:
+                fold_pvals.append(f"fold{i}: skip (n={len(fr)})")
+        lb_fold_msg = "  per-fold: " + " | ".join(fold_pvals)
     else:
         lb_msg = f"Ljung-Box: недостаточно данных ({len(oos_residuals_centered)} остатков)"
+        lb_top_msg = lb_abs_msg = lb_fold_msg = None
     print(lb_msg)
     logger.info(lb_msg)
+    for _msg in (lb_top_msg, lb_abs_msg, lb_fold_msg):
+        if _msg:
+            print(_msg)
+            logger.info(_msg)
 
     meta_q_oos, res_q, lower_alpha, upper_alpha = _get_ci_params(
         ci_mode, oos_meta, oos_residuals_centered
