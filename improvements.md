@@ -9,7 +9,8 @@
 - **Walk-forward валидация** — 3 сплита с расширяющимся окном, предотвращает data leakage.
 - **MIMO (Direct Multi-Step Forecasting)** — отдельная модель на каждый горизонт, нет накопления ошибки авторегрессии.
 - **Bayesian hyperparameter search (Optuna)** — прогресс-бар в консоли; персистентность результатов в JSON.
-- **Time-varying макропризнаки** — USD/RUB (ЦБ РФ XML), ставка ЦБ (SOAP), Brent (MOEX ISS BRN), IMOEX и RTSI (MOEX ISS candles); Granger pre-screening исключает незначимые.
+- **Time-varying макропризнаки** — USD/RUB (ЦБ РФ XML), ставка ЦБ (SOAP), Brent (MOEX ISS BRN), IMOEX и RTSI (MOEX ISS candles); Granger pre-screening исключает незначимые. Для SBER: RTSI retained (p=0.020), IMOEX excluded.
+- **LSTM Ensemble по seeds (N=3)** — `ENSEMBLE_SEEDS = [42, 7, 123]`; усреднение предсказаний до Ridge; снижает дисперсию avg Error% между прогонами; Ridge по-прежнему получает `[lstm_avg, xgb_pred]`.
 - **Признаки сезонности** — day_of_week, month, quarter; автоматически нормализуются MinMaxScaler.
 - **Автосклейка YNDX+YDEX** — для реструктурированных тикеров история собирается из двух листингов без ручного вмешательства.
 - **Статистическая диагностика** — Ljung-Box на OOS-остатках, Granger causality на топ-15 признаках.
@@ -45,8 +46,6 @@
 ### Что можно добавить
 
 **В работе (запланировано)**
-
-- **Ensemble по seeds (N=3–5)** — обучить LSTM с разными seed, усреднить предсказания; стабилизирует метрики без изменения архитектуры; время прогона ×N
 
 **Средний приоритет**
 
@@ -84,6 +83,10 @@
 ---
 
 ## Архив (реализовано)
+
+### v15.8 — LSTM Ensemble по seeds (N=3)
+
+- **✅ v15.8 — Ensemble по seeds** — `ENSEMBLE_SEEDS = [42, 7, 123]`; три LSTM с разными инициализациями на каждый walk-forward сплит; предсказания усредняются до Ridge (Вариант A); Ridge по-прежнему `[lstm_avg, xgb_pred]`; время прогона ×3 по блоку LSTM; снижает дисперсию ошибки между запусками
 
 ### v15.7 — IMOEX и RTSI как признаки
 
