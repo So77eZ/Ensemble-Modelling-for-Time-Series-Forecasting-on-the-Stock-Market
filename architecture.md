@@ -4,7 +4,7 @@
 
 ## Обзор
 
-Система прогнозирования рыночных цен акций российского рынка (MOEX). Реализует стэкинг-ансамбль LSTM + XGBoost с доверительными интервалами на основе квантильной регрессии. Поддерживает два режима: прогноз на будущее и бэктест на исторических данных. Начиная с v15 включает time-varying макропризнаки (USD/RUB, ставка ЦБ, Brent), Granger pre-screening и статистическую диагностику остатков. С v15.1 — фиксированный seed (`RANDOM_SEED=42`) и метрика Direction Accuracy. С v15.2 — признаки сезонности (`day_of_week`, `month`, `quarter`). С v15.3 — Ridge мета-леарнер с интерпретируемыми весами. С v15.4 — автосклейка YNDX+YDEX и Ljung-Box guard для коротких рядов. С v15.6 — Optuna-оптимизация alpha Ridge: 20-trial поиск на накопленных OOS-данных walk-forward. С v15.7 — IMOEX и RTSI как time-varying признаки рыночного контекста. С v15.8 — LSTM Ensemble по seeds (N=3): три модели с разными инициализациями, усреднение до Ridge.
+Система прогнозирования рыночных цен акций российского рынка (MOEX). Реализует стэкинг-ансамбль LSTM + XGBoost с доверительными интервалами на основе квантильной регрессии. Поддерживает два режима: прогноз на будущее и бэктест на исторических данных. Начиная с v15 включает time-varying макропризнаки (USD/RUB, ставка ЦБ, Brent), Granger pre-screening и статистическую диагностику остатков. С v15.1 — фиксированный seed (`RANDOM_SEED=42`) и метрика Direction Accuracy. С v15.2 — признаки сезонности (`day_of_week`, `month`, `quarter`). С v15.3 — Ridge мета-леарнер с интерпретируемыми весами. С v15.4 — автосклейка YNDX+YDEX и Ljung-Box guard для коротких рядов. С v15.6 — Optuna-оптимизация alpha Ridge: 20-trial поиск на накопленных OOS-данных walk-forward. С v15.7 — IMOEX и RTSI как time-varying признаки рыночного контекста. С v15.8 — LSTM Ensemble по seeds (N=3): три модели с разными инициализациями, усреднение до Ridge. С v15.9 — дивидендные time-varying признаки через MOEX ISS (`fundamentals_loader.py`): `div_days_to_next`, `div_next_amount`, `div_days_since_last`; работает для любого тикера MOEX; look-ahead bias исключён окном 45 дней.
 
 ---
 
@@ -150,18 +150,26 @@ python .\stock_modelv15.py --ticker GAZP --optimize --trials 30 --no-gui
 │  usd_rub_hist (ЦБ РФ XML API), cbr_rate (SOAP DailyInfo.asmx)  │
 │  brent_price (MOEX ISS BRN фьючерс)                             │
 │  imoex, rtsi (MOEX ISS candles, engines/stock/markets/index)    │
-│  Granger pre-screening: признаки с p ≥ 0.05 исключаются        │
+│                                                                 │
+│  Дивидендные time-varying (v15.9, fundamentals_loader.py):      │
+│  div_days_to_next  — обратный отсчёт до реестра (sentinel 999)  │
+│  div_next_amount   — объявленный дивиденд ₽ (0 если нет)        │
+│  div_days_since_last — дней с последней отсечки (sentinel 999)  │
+│  look-ahead bias исключён: окно объявления ≤ 45 дней            │
+│  Работает для любого тикера MOEX (SBER, GAZP, LKOH, …)         │
+│                                                                 │
+│  Granger pre-screening: все macro + div с p ≥ 0.05 исключаются │
 │                                                                 │
 │  Сезонность (v15.2):                                            │
 │  day_of_week (0=пн…4=пт), month (1–12), quarter (1–4)          │
 │  вычисляются в update_technical_indicators из Date              │
 │                                                                 │
-│          Итого: 36–41 признаков (динамически)                   │
+│          Итого: 36–44 признаков (динамически)                   │
 └───────────────────────────────┬─────────────────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │              НОРМАЛИЗАЦИЯ (MinMaxScaler)                        │
-│  Общий скейлер для всех 36–41 признаков + отдельный для Close   │
+│  Общий скейлер для всех 36–44 признаков + отдельный для Close   │
 └───────────────────────────────┬─────────────────────────────────┘
                                 ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -340,10 +348,14 @@ ticker → TinkoffFundamentalLoader.get_fundamentals()
 
 load_macro_data(start_date, end_date) → DataFrame[Date, usd_rub_hist, cbr_rate, brent_price, imoex, rtsi]
     → merge по Date → +0–5 макропризнаков (ffill/bfill для выходных)
-    → Granger pre-screening: признаки с p ≥ 0.05 исключаются из features
 
-DataFrame (36–41 признаков) → MinMaxScaler → нормализованный массив
-    → скользящее окно LOOK_BACK=30 → X (N, 30, 36–41), y (N,)
+load_dividend_features(ticker, start_date, end_date)   ← fundamentals_loader.py
+    → DataFrame[Date, div_days_to_next, div_next_amount, div_days_since_last]
+    → merge по Date → +0–3 дивидендных признаков (sentinel-значения 999/0)
+    → Granger pre-screening (macro + div): признаки с p ≥ 0.05 исключаются
+
+DataFrame (36–44 признаков) → MinMaxScaler → нормализованный массив
+    → скользящее окно LOOK_BACK=30 → X (N, 30, 36–44), y (N,)
 
 X, y → Optuna (опционально) → best_lstm_params, best_xgb_params
     → сохранение в {TICKER}_hyperparams.json

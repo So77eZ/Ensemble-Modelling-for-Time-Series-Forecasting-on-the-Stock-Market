@@ -59,8 +59,10 @@ tf.random.set_seed(RANDOM_SEED)
 
 from presentation_output import plot_presentation
 from macro_loader import load_macro_data
+from fundamentals_loader import load_dividend_features
 
-_MACRO_COLS = ['usd_rub_hist', 'cbr_rate', 'brent_price', 'imoex', 'rtsi']
+_MACRO_COLS    = ['usd_rub_hist', 'cbr_rate', 'brent_price', 'imoex', 'rtsi']
+_FUND_DIV_COLS = ['div_days_to_next', 'div_next_amount', 'div_days_since_last']
 
 from config import (
     LSTM_LOOK_BACK, LSTM_EPOCHS, LSTM_PATIENCE, LSTM_BATCH_SIZE,
@@ -650,7 +652,7 @@ def optimize_ridge_alpha(meta_features: np.ndarray, y_true: np.ndarray, n_trials
 # MODEL TRAINING
 # ============================================================================
 
-def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_params, backtest_mode=False, backtest_date=None, horizon: int = 1, ci_mode: str = 'wide', macro_data=None, fund_data=None):
+def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_params, backtest_mode=False, backtest_date=None, horizon: int = 1, ci_mode: str = 'wide', macro_data=None, fund_data=None, div_data=None):
     logger.info("=" * 60)
     logger.info(f"PREPARING DATA FOR {ticker}")
     if backtest_mode:
@@ -678,6 +680,14 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     data = data.merge(macro_data, on='Date', how='left')
     data = data.ffill().bfill()
 
+    # Дивидендные time-varying признаки (MOEX ISS, любой тикер)
+    if div_data is None:
+        div_start = data['Date'].min().strftime('%Y-%m-%d')
+        logger.info(f"Loading dividend features for {ticker}...")
+        div_data = load_dividend_features(ticker, div_start, end_date)
+    div_data['Date'] = pd.to_datetime(div_data['Date']).dt.normalize()
+    data = data.merge(div_data, on='Date', how='left')
+
     data = data.infer_objects(copy=False).fillna(0)
 
     # Гарантируем наличие фундаментальных колонок (если Tinkoff API недоступен)
@@ -702,11 +712,14 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         'market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'beta',
         # --- Макроэкономические (time-varying, загружаются из macro_loader) ---
         *[c for c in _MACRO_COLS if c in data.columns and not data[c].isna().all()],
+        # --- Дивидендные (time-varying, загружаются из fundamentals_loader) ---
+        *[c for c in _FUND_DIV_COLS if c in data.columns and not data[c].isna().all()],
     ]
 
-    # Granger-скрининг: убираем макропризнаки, не предсказывающие Close (p >= 0.05)
+    # Granger-скрининг: убираем макро- и дивидендные признаки, не предсказывающие Close (p >= 0.05)
     from statsmodels.tsa.stattools import grangercausalitytests as _gct
-    for _mc in [c for c in _MACRO_COLS if c in features]:
+    _granger_cols = [c for c in _MACRO_COLS + _FUND_DIV_COLS if c in features]
+    for _mc in _granger_cols:
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 _gr = _gct(data[['Close', _mc]].dropna(), maxlag=5)
@@ -1049,6 +1062,8 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
     macro_start = data['Date'].min().strftime('%Y-%m-%d')
     logger.info("Loading macro data once for all horizons...")
     shared_macro = load_macro_data(macro_start, backtest_date)
+    logger.info(f"Loading dividend features once for all horizons ({ticker})...")
+    shared_div = load_dividend_features(ticker, macro_start, backtest_date)
     logger.info("Loading fundamental data once for all horizons...")
     shared_funds = tinkoff_loader.get_fundamentals(ticker) if tinkoff_loader else {}
 
@@ -1062,6 +1077,7 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
             ci_mode=ci_mode,
             macro_data=shared_macro,
             fund_data=shared_funds,
+            div_data=shared_div,
         )
 
     merged = merge_horizon_results(all_results)
@@ -1523,6 +1539,16 @@ if __name__ == '__main__':
             if col not in data_for_opt.columns:
                 data_for_opt[col] = 0.0
 
+        _opt_start = data_for_opt['Date'].min().strftime('%Y-%m-%d')
+        _opt_end   = backtest_date if backtest_mode else end_date
+        _opt_macro = load_macro_data(_opt_start, _opt_end)
+        _opt_div   = load_dividend_features(ticker, _opt_start, _opt_end)
+        data_for_opt['Date'] = pd.to_datetime(data_for_opt['Date']).dt.normalize()
+        data_for_opt = data_for_opt.merge(_opt_macro, on='Date', how='left')
+        _opt_div['Date'] = pd.to_datetime(_opt_div['Date']).dt.normalize()
+        data_for_opt = data_for_opt.merge(_opt_div, on='Date', how='left')
+        data_for_opt = data_for_opt.ffill().bfill()
+
         features = [
             'Open', 'High', 'Low', 'Close', 'Volume',
             'SMA_10', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Histogram',
@@ -1535,11 +1561,13 @@ if __name__ == '__main__':
             'market_cap', 'roe', 'dividend_yield', 'pe_ratio', 'pb_ratio', 'beta',
             # --- Макроэкономические (time-varying) ---
             *[c for c in _MACRO_COLS if c in data_for_opt.columns and not data_for_opt[c].isna().all()],
+            # --- Дивидендные (time-varying) ---
+            *[c for c in _FUND_DIV_COLS if c in data_for_opt.columns and not data_for_opt[c].isna().all()],
         ]
 
         # Granger-скрининг для Optuna: те же правила, что и в основной ветке
         from statsmodels.tsa.stattools import grangercausalitytests as _gct
-        for _mc in [c for c in _MACRO_COLS if c in features]:
+        for _mc in [c for c in _MACRO_COLS + _FUND_DIV_COLS if c in features]:
             try:
                 with contextlib.redirect_stdout(io.StringIO()):
                     _gr = _gct(data_for_opt[['Close', _mc]].dropna(), maxlag=5)
@@ -1671,6 +1699,8 @@ if __name__ == '__main__':
         _macro_start = data['Date'].min().strftime('%Y-%m-%d')
         logger.info("Loading macro data once for all horizons...")
         _shared_macro = load_macro_data(_macro_start, end_date)
+        logger.info(f"Loading dividend features once for all horizons ({ticker})...")
+        _shared_div = load_dividend_features(ticker, _macro_start, end_date)
 
         all_results = {}
         for h in [1, 2, 3]:
@@ -1682,6 +1712,7 @@ if __name__ == '__main__':
                 ci_mode=ci_mode,
                 macro_data=_shared_macro,
                 fund_data=shared_funds,
+                div_data=_shared_div,
             )
 
         merged = merge_horizon_results(all_results)
