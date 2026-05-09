@@ -11,10 +11,10 @@
 LSTM_LOOK_BACK: int = 30
 
 # Максимальное число эпох обучения (EarlyStopping остановит раньше при необходимости)
-LSTM_EPOCHS: int = 10
+LSTM_EPOCHS: int = 100
 
 # Число эпох без улучшения val_loss до остановки (EarlyStopping patience)
-LSTM_PATIENCE: int = 3
+LSTM_PATIENCE: int = 10
 
 # Размер батча при обучении
 LSTM_BATCH_SIZE: int = 32
