@@ -1035,7 +1035,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
 # BACKTESTING FUNCTIONS
 # ============================================================================
 
-def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params, ci_mode: str = 'wide'):
+def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params, ci_mode: str = 'wide', macro_data=None, div_data=None):
     """
     Запуск бэктеста: обучение до backtest_date, прогноз на следующие дни,
     сравнение с реальными данными.
@@ -1060,10 +1060,12 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
     
     # Обучаем модель на данных до backtest_date для трех горизонтов
     macro_start = data['Date'].min().strftime('%Y-%m-%d')
-    logger.info("Loading macro data once for all horizons...")
-    shared_macro = load_macro_data(macro_start, backtest_date)
-    logger.info(f"Loading dividend features once for all horizons ({ticker})...")
-    shared_div = load_dividend_features(ticker, macro_start, backtest_date)
+    if macro_data is None:
+        logger.info("Loading macro data once for all horizons...")
+        macro_data = load_macro_data(macro_start, backtest_date)
+    if div_data is None:
+        logger.info(f"Loading dividend features once for all horizons ({ticker})...")
+        div_data = load_dividend_features(ticker, macro_start, backtest_date)
     logger.info("Loading fundamental data once for all horizons...")
     shared_funds = tinkoff_loader.get_fundamentals(ticker) if tinkoff_loader else {}
 
@@ -1075,9 +1077,9 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
             backtest_mode=True, backtest_date=backtest_date,
             horizon=h,
             ci_mode=ci_mode,
-            macro_data=shared_macro,
+            macro_data=macro_data,
             fund_data=shared_funds,
-            div_data=shared_div,
+            div_data=div_data,
         )
 
     merged = merge_horizon_results(all_results)
@@ -1521,6 +1523,14 @@ if __name__ == '__main__':
     logger.info("Loading fundamental data once for all horizons...")
     shared_funds = tinkoff_loader.get_fundamentals(ticker) if tinkoff_loader else {}
 
+    # Загружаем macro+div один раз для всего прогона (Optuna + обучение + бэктест)
+    _shared_start = data['Date'].min().strftime('%Y-%m-%d')
+    _shared_end   = backtest_date if backtest_mode else end_date
+    logger.info("Loading macro data (once for entire run)...")
+    shared_macro = load_macro_data(_shared_start, _shared_end)
+    logger.info(f"Loading dividend features (once for entire run, {ticker})...")
+    shared_div = load_dividend_features(ticker, _shared_start, _shared_end)
+
     # Получаем или оптимизируем гиперпараметры
     if optimize:
         logger.info("\n" + "="*60)
@@ -1539,14 +1549,11 @@ if __name__ == '__main__':
             if col not in data_for_opt.columns:
                 data_for_opt[col] = 0.0
 
-        _opt_start = data_for_opt['Date'].min().strftime('%Y-%m-%d')
-        _opt_end   = backtest_date if backtest_mode else end_date
-        _opt_macro = load_macro_data(_opt_start, _opt_end)
-        _opt_div   = load_dividend_features(ticker, _opt_start, _opt_end)
         data_for_opt['Date'] = pd.to_datetime(data_for_opt['Date']).dt.normalize()
-        data_for_opt = data_for_opt.merge(_opt_macro, on='Date', how='left')
-        _opt_div['Date'] = pd.to_datetime(_opt_div['Date']).dt.normalize()
-        data_for_opt = data_for_opt.merge(_opt_div, on='Date', how='left')
+        data_for_opt = data_for_opt.merge(shared_macro, on='Date', how='left')
+        _opt_div_norm = shared_div.copy()
+        _opt_div_norm['Date'] = pd.to_datetime(_opt_div_norm['Date']).dt.normalize()
+        data_for_opt = data_for_opt.merge(_opt_div_norm, on='Date', how='left')
         data_for_opt = data_for_opt.ffill().bfill()
 
         features = [
@@ -1615,7 +1622,10 @@ if __name__ == '__main__':
     # Основной запуск модели
     if backtest_mode:
         # Режим бэктеста
-        backtest_results = run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params, ci_mode=ci_mode)
+        backtest_results = run_backtest(
+            data, ticker, backtest_date, best_lstm_params, best_xgb_params,
+            ci_mode=ci_mode, macro_data=shared_macro, div_data=shared_div,
+        )
 
         if backtest_results and backtest_results[0]:
             results_list, forecasts, forecast_dates, confidence_intervals, _ = backtest_results
@@ -1696,12 +1706,6 @@ if __name__ == '__main__':
 
     else:
         # Обычный режим прогноза
-        _macro_start = data['Date'].min().strftime('%Y-%m-%d')
-        logger.info("Loading macro data once for all horizons...")
-        _shared_macro = load_macro_data(_macro_start, end_date)
-        logger.info(f"Loading dividend features once for all horizons ({ticker})...")
-        _shared_div = load_dividend_features(ticker, _macro_start, end_date)
-
         all_results = {}
         for h in [1, 2, 3]:
             all_results[h] = prepare_and_train_model(
@@ -1710,9 +1714,9 @@ if __name__ == '__main__':
                 backtest_mode=False,
                 horizon=h,
                 ci_mode=ci_mode,
-                macro_data=_shared_macro,
+                macro_data=shared_macro,
                 fund_data=shared_funds,
-                div_data=_shared_div,
+                div_data=shared_div,
             )
 
         merged = merge_horizon_results(all_results)
