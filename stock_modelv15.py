@@ -31,7 +31,8 @@ import xml.etree.ElementTree as ET
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-import tensorflow as tf
+import torch
+import torch.nn as nn
 import logging
 
 import optuna
@@ -43,16 +44,16 @@ except ImportError:
     print("XGBoost not installed. Install with: pip install xgboost")
     XGBOOST_AVAILABLE = False
 
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
-from tensorflow.keras.callbacks import EarlyStopping
-from tensorflow.keras.optimizers import Adam
+# LSTM реализован на PyTorch (CUDA на Windows native, в отличие от TF 2.10+).
+# Сохранённые hyperparams (units/dropout/lr) совместимы с PyTorch-архитектурой.
 
 RANDOM_SEED = 42
 ENSEMBLE_SEEDS = [42, 7, 123]   # N=3 LSTM с разными инициализациями
 random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
-tf.random.set_seed(RANDOM_SEED)
+torch.manual_seed(RANDOM_SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(RANDOM_SEED)
 
 # ============================================================================
 # CONFIGURATION & LOGGING SETUP
@@ -106,11 +107,12 @@ logger = logging.getLogger(__name__)
 logger.info("=" * 60)
 logger.info(f"MODEL VERSION: {MODEL_VERSION}")
 logger.info(f"OUTPUT DIR: {MODEL_OUTPUT_DIR}")
-logger.info(f"TensorFlow: {tf.__version__}")
-_gpus = tf.config.list_physical_devices('GPU')
-logger.info(f"GPU Available: {_gpus}")
-for _gpu in _gpus:
-    tf.config.experimental.set_memory_growth(_gpu, True)
+logger.info(f"PyTorch: {torch.__version__}")
+TORCH_DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+if TORCH_DEVICE.type == 'cuda':
+    logger.info(f"GPU Available: {torch.cuda.get_device_name(0)} (CUDA {torch.version.cuda})")
+else:
+    logger.info("GPU Available: [] (CPU mode)")
 logger.info(f"XGBoost Available: {XGBOOST_AVAILABLE}")
 logger.info("=" * 60)
 
@@ -649,33 +651,124 @@ def update_technical_indicators(data):
 # OPTUNA OPTIMIZATION
 # ============================================================================
 
+class LSTMRegressor(nn.Module):
+    """3-слойная LSTM-регрессия с decreasing dropout, аналог Keras-архитектуры из v15.x.
+    Архитектура: LSTM(u1) → Dropout(d) → LSTM(u2) → Dropout(d/2) → LSTM(u2) → Dropout(d) → Dense(32, ReLU) → Dense(1).
+    """
+    def __init__(self, n_features: int, units_1: int, units_2: int, dropout: float):
+        super().__init__()
+        self.lstm1 = nn.LSTM(n_features, units_1, batch_first=True)
+        self.drop1 = nn.Dropout(dropout)
+        self.lstm2 = nn.LSTM(units_1, units_2, batch_first=True)
+        self.drop2 = nn.Dropout(dropout * 0.5)
+        self.lstm3 = nn.LSTM(units_2, units_2, batch_first=True)
+        self.drop3 = nn.Dropout(dropout)
+        self.dense1 = nn.Linear(units_2, 32)
+        self.dense2 = nn.Linear(32, 1)
+
+    def forward(self, x):
+        x, _ = self.lstm1(x); x = self.drop1(x)
+        x, _ = self.lstm2(x); x = self.drop2(x)
+        x, _ = self.lstm3(x)             # (B, T, units_2)
+        x = self.drop3(x[:, -1, :])      # last timestep, ≡ return_sequences=False
+        x = torch.relu(self.dense1(x))
+        return self.dense2(x).squeeze(-1)
+
+
+def _to_device_tensor(arr: np.ndarray) -> torch.Tensor:
+    return torch.from_numpy(np.asarray(arr, dtype=np.float32)).to(TORCH_DEVICE)
+
+
+def train_lstm_torch(model: LSTMRegressor, X_train: np.ndarray, y_train: np.ndarray,
+                     lr: float, epochs: int, patience: int, batch_size: int):
+    """Тренировка LSTM с manual EarlyStopping (validation_split=0.2, restore_best_weights=True).
+    Возвращает (model, history dict с ключами 'loss'/'val_loss')."""
+    model = model.to(TORCH_DEVICE)
+    X_t = _to_device_tensor(X_train)
+    y_t = _to_device_tensor(y_train)
+
+    n_val = max(1, int(0.2 * len(X_t)))
+    X_tr, X_val = X_t[:-n_val], X_t[-n_val:]
+    y_tr, y_val = y_t[:-n_val], y_t[-n_val:]
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    loss_fn = nn.MSELoss()
+
+    history = {'loss': [], 'val_loss': []}
+    best_val = float('inf')
+    best_state = None
+    no_improve = 0
+
+    for _epoch in range(epochs):
+        model.train()
+        perm = torch.randperm(len(X_tr), device=TORCH_DEVICE)
+        train_loss_sum = 0.0
+        for i in range(0, len(X_tr), batch_size):
+            idx = perm[i:i+batch_size]
+            optimizer.zero_grad()
+            pred = model(X_tr[idx])
+            loss = loss_fn(pred, y_tr[idx])
+            loss.backward()
+            optimizer.step()
+            train_loss_sum += loss.item() * len(idx)
+        train_loss = train_loss_sum / len(X_tr)
+
+        model.eval()
+        with torch.no_grad():
+            val_pred = model(X_val)
+            val_loss = loss_fn(val_pred, y_val).item()
+
+        history['loss'].append(train_loss)
+        history['val_loss'].append(val_loss)
+
+        if val_loss < best_val:
+            best_val = val_loss
+            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    return model, history
+
+
+def predict_lstm_torch(model: LSTMRegressor, X: np.ndarray) -> np.ndarray:
+    """Inference на GPU; возвращает 1D numpy."""
+    model.eval()
+    X_t = _to_device_tensor(X)
+    with torch.no_grad():
+        out = model(X_t)
+    return out.detach().cpu().numpy().flatten()
+
+
 def optimize_lstm_params(X_train, y_train, n_trials=20):
     def objective(trial):
         units = trial.suggest_int('units', 32, 128)
         dropout = trial.suggest_float('dropout', 0.1, 0.5)
         lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
 
-        model = Sequential()
-        model.add(Input(shape=(X_train.shape[1], X_train.shape[2])))
-        model.add(LSTM(units=units, return_sequences=True))
-        model.add(Dropout(dropout))
-        model.add(LSTM(units=units))
-        model.add(Dropout(dropout))
-        model.add(Dense(1))
+        # 2-слойная модель для быстрого Optuna trial (как было в Keras-версии)
+        class _OptunaLSTM(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.lstm1 = nn.LSTM(X_train.shape[2], units, batch_first=True)
+                self.drop1 = nn.Dropout(dropout)
+                self.lstm2 = nn.LSTM(units, units, batch_first=True)
+                self.drop2 = nn.Dropout(dropout)
+                self.dense = nn.Linear(units, 1)
+            def forward(self, x):
+                x, _ = self.lstm1(x); x = self.drop1(x)
+                x, _ = self.lstm2(x); x = self.drop2(x[:, -1, :])
+                return self.dense(x).squeeze(-1)
 
-        optimizer = Adam(learning_rate=lr)
-        model.compile(optimizer=optimizer, loss='mean_squared_error')
-
-        early_stop = EarlyStopping(monitor='val_loss', patience=LSTM_PATIENCE, restore_best_weights=True)
-        history = model.fit(
-            X_train, y_train,
-            epochs=LSTM_EPOCHS,
-            batch_size=LSTM_BATCH_SIZE,
-            validation_split=0.2,
-            callbacks=[early_stop],
-            verbose=0
-        )
-        return min(history.history['val_loss'])
+        model = _OptunaLSTM()
+        _, hist = train_lstm_torch(model, X_train, y_train, lr=lr,
+                                    epochs=LSTM_EPOCHS, patience=LSTM_PATIENCE,
+                                    batch_size=LSTM_BATCH_SIZE)
+        return min(hist['val_loss'])
 
     study = optuna.create_study(direction='minimize')
     study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
@@ -884,36 +977,29 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         X_lstm_test  = X_lstm[train_end:test_end]
         logger.info(f"Train size: {len(X_train)}, Test size: {len(X_test)}")
 
-        logger.info(f"Training LSTM ensemble ({len(ENSEMBLE_SEEDS)} seeds)...")
+        logger.info(f"Training LSTM ensemble ({len(ENSEMBLE_SEEDS)} seeds) on {TORCH_DEVICE}...")
         lstm_units_1 = best_lstm_params['units']
         lstm_units_2 = max(32, lstm_units_1 // 2)
+        n_features_lstm = X_lstm_train.shape[2]
         lstm_models_split = []
         for _seed in ENSEMBLE_SEEDS:
-            tf.random.set_seed(_seed)
+            torch.manual_seed(_seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(_seed)
             np.random.seed(_seed)
-            _m = Sequential()
-            _m.add(Input(shape=(X_lstm_train.shape[1], X_lstm_train.shape[2])))
-            _m.add(LSTM(units=lstm_units_1, return_sequences=True))
-            _m.add(Dropout(best_lstm_params['dropout']))
-            _m.add(LSTM(units=lstm_units_2, return_sequences=True))
-            _m.add(Dropout(best_lstm_params['dropout'] * 0.5))
-            _m.add(LSTM(units=lstm_units_2))
-            _m.add(Dropout(best_lstm_params['dropout']))
-            _m.add(Dense(32, activation='relu'))
-            _m.add(Dense(1))
-            _m.compile(optimizer=Adam(learning_rate=best_lstm_params['lr']), loss='mean_squared_error')
-            _early = EarlyStopping(monitor='val_loss', patience=LSTM_PATIENCE, restore_best_weights=True)
-            _hist = _m.fit(
-                X_lstm_train, y_train,
+            _m = LSTMRegressor(n_features_lstm, lstm_units_1, lstm_units_2, best_lstm_params['dropout'])
+            _m, _hist = train_lstm_torch(
+                _m, X_lstm_train, y_train,
+                lr=best_lstm_params['lr'],
                 epochs=LSTM_EPOCHS,
+                patience=LSTM_PATIENCE,
                 batch_size=LSTM_BATCH_SIZE,
-                validation_split=0.2,
-                callbacks=[_early],
-                verbose=0
             )
             lstm_models_split.append(_m)
-            logger.info(f"  seed={_seed}: train={_hist.history['loss'][-1]:.4f}, val={_hist.history['val_loss'][-1]:.4f}")
-        tf.random.set_seed(RANDOM_SEED)
+            logger.info(f"  seed={_seed}: train={_hist['loss'][-1]:.4f}, val={_hist['val_loss'][-1]:.4f}")
+        torch.manual_seed(RANDOM_SEED)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(RANDOM_SEED)
         np.random.seed(RANDOM_SEED)
 
         logger.info("Training XGBoost model...")
@@ -962,7 +1048,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
 
         logger.info("Generating level 0 predictions...")
         lstm_train_preds = np.mean(
-            [_m.predict(X_lstm_train, verbose=0).flatten() for _m in lstm_models_split], axis=0
+            [predict_lstm_torch(_m, X_lstm_train) for _m in lstm_models_split], axis=0
         )
         xgb_train_preds = xgb_model.predict(X_train_flat)
 
@@ -976,7 +1062,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         last_y_train = y_train
 
         lstm_test_preds = np.mean(
-            [_m.predict(X_lstm_test, verbose=0).flatten() for _m in lstm_models_split], axis=0
+            [predict_lstm_torch(_m, X_lstm_test) for _m in lstm_models_split], axis=0
         )
         X_test_flat = X_test.reshape(X_test.shape[0], -1)
         xgb_test_preds = xgb_model.predict(X_test_flat)
@@ -1120,7 +1206,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     # LSTM-вход — только подмножество фич (см. _LSTM_FEATURES)
     _lstm_input = last_scaled_df[lstm_features].values.reshape(1, LSTM_LOOK_BACK, len(lstm_features))
     lstm_pred_scaled = float(np.mean(
-        [_m.predict(_lstm_input, verbose=0)[0][0] for _m in best_lstm_ensemble]
+        [predict_lstm_torch(_m, _lstm_input)[0] for _m in best_lstm_ensemble]
     ))
 
     current_scaled_flat = last_scaled.reshape(1, -1)
