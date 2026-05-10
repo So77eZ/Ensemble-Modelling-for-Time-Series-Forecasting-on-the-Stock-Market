@@ -1,5 +1,7 @@
 # ── Глубокое обучение ────────────────────────────────────────────────────────
-tensorflow==2.20.0          # LSTM, Keras API
+# PyTorch + CUDA 12.8 (Blackwell-ready, RTX 50 series).
+# Установка: pip install torch --index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0+cu128          # LSTM на GPU (Windows native CUDA)
 
 # ── Градиентный бустинг ──────────────────────────────────────────────────────
 xgboost==3.1.2              # XGBoost Regressor, квантильная регрессия, meta-learner
