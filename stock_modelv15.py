@@ -526,6 +526,30 @@ def load_stock_data_moex_test(ticker_symbol, start_date, end_date):
                     f"1 на {(merged['is_post_restructure']==1).sum()} строках")
         return merged
 
+    # T (МКПАО Т-Технологии, листинг с 2024-11) — реструктуризация TCSG (TCS Group Holding
+    # PLC, делистнут 2024-11-27 после смены юрисдикции Кипр → РФ).
+    # Особенность: MOEX отдаёт под тикером 'T' уже **склеенную историю** TCSG+T
+    # (1697 строк, 2019-10-28 → сегодня) — отдельная склейка не нужна, в отличие от
+    # YDEX. Дамми is_post_restructure ставим по дате (граница 2024-11-28).
+    # Принимаем оба имени тикера ('T' и 'TCSG') — оба возвращают одну и ту же серию.
+    if ticker_symbol in ('T', 'TCSG'):
+        data = _load_single_ticker('T', start_date, end_date)
+        if data is None or data.empty:
+            # Fallback на старый тикер, если вдруг T недоступен (теоретический сценарий)
+            data = _load_single_ticker('TCSG', start_date, end_date)
+            if data is None or data.empty:
+                logger.error("T/TCSG: не удалось загрузить серию ни под T, ни под TCSG")
+                return None
+        data = data.copy()
+        cutoff = pd.to_datetime('2024-11-28')
+        data['is_post_restructure'] = (data['Date'] >= cutoff).astype(int)
+        n0 = int((data['is_post_restructure'] == 0).sum())
+        n1 = int((data['is_post_restructure'] == 1).sum())
+        logger.info(f"T/TCSG: {len(data)} строк ({data['Date'].min()} до {data['Date'].max()}); "
+                    f"is_post_restructure: 0 на {n0} строках (TCSG-эпоха), "
+                    f"1 на {n1} строках (T-эпоха, с 2024-11-28)")
+        return data
+
     return _load_single_ticker(ticker_symbol, start_date, end_date)
 
 # ============================================================================
