@@ -1,7 +1,8 @@
 # ── Глубокое обучение ────────────────────────────────────────────────────────
-# PyTorch + CUDA 12.8 (Blackwell-ready, RTX 50 series).
-# Установка: pip install torch --index-url https://download.pytorch.org/whl/cu128
-torch==2.11.0+cu128          # LSTM на GPU (Windows native CUDA)
+# PyTorch + CUDA 13.0 (Blackwell-ready, RTX 50 series; согласовано с системным
+# CUDA Toolkit 13.x). Установка:
+#   pip install torch==2.11.0+cu130 --index-url https://download.pytorch.org/whl/cu130
+torch==2.11.0+cu130          # LSTM на GPU (Windows native CUDA)
 
 # ── Градиентный бустинг ──────────────────────────────────────────────────────
 xgboost==3.1.2              # XGBoost Regressor, квантильная регрессия, meta-learner
