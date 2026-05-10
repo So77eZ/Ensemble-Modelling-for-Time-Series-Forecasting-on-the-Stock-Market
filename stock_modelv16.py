@@ -11,7 +11,7 @@ import numpy as np
 
 pd.set_option('future.no_silent_downcasting', True)
 
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.linear_model import Ridge
 
@@ -66,11 +66,12 @@ from fundamentals_loader import load_dividend_features
 _MACRO_COLS    = ['usd_rub_hist', 'cbr_rate', 'brent_price', 'imoex', 'rtsi']
 _FUND_DIV_COLS = ['div_days_to_next', 'div_next_amount', 'div_days_since_last']
 
-# Подмножество признаков, которое получает LSTM.
-# XGB видит полный набор (~36 фичей), LSTM — только сырое OHLCV + return + контекст
-# волатильности. Идея: дать LSTM уникальное «сырое временное» представление,
-# чтобы он не дублировал feature engineering, который XGB и так выучит сам.
-# Это попытка вернуть LSTM комплементарный вклад в стэкинг (см. improvements.md).
+# Подмножество признаков, которое получает LSTM (v15-наследие).
+# XGB видит полный набор (43 фичей включая relative features), LSTM — только сырое
+# OHLCV + return + контекст волатильности. Идея: дать LSTM уникальное «сырое
+# временное» представление, чтобы он не дублировал feature engineering, который
+# XGB и так выучит сам. Расширение (15 фич) пробовали для log-return target в v16 —
+# не дало эффекта, оставлено наследие v15.
 _LSTM_FEATURES = ['Open', 'High', 'Low', 'Close', 'Volume', 'Price_Change_1', 'Vol_Return_10']
 
 from config import (
@@ -812,6 +813,10 @@ def optimize_ridge_alpha(meta_features: np.ndarray, y_true: np.ndarray, n_trials
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     def objective(trial):
+        # TODO (B1): рассмотреть переход на directional scoring (Sharpe / IC /
+        # direction accuracy) — структурно правильнее, чем MSE: модели перестанут
+        # скатываться к предсказанию среднего, что критично для финансовых рядов
+        # с низким signal-to-noise.
         alpha = trial.suggest_float('alpha', 1e-3, 100.0, log=True)
         scores = cross_val_score(
             Ridge(alpha=alpha, positive=True), meta_features, y_true,
@@ -933,29 +938,20 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     scaled_data = scaler.fit_transform(data[features])
     scaled_df = pd.DataFrame(scaled_data, columns=features, index=data.index)
     
-    # raw_close: нескалированные цены закрытия, выровненные с scaled_df.
-    # ref_prices[j] = цена на момент j (база для лог-доходности горизонта h).
-    raw_close = data['Close'].values
+    close_scaler = MinMaxScaler()
+    close_scaler.fit(data[['Close']])
 
     # LSTM получает подмножество фич (см. _LSTM_FEATURES); XGB — полный набор.
     lstm_features = [f for f in _LSTM_FEATURES if f in features]
     logger.info(f"LSTM features ({len(lstm_features)}/{len(features)}): {lstm_features}")
 
     logger.info(f"Preparing sequences with look_back={LSTM_LOOK_BACK}, horizon={horizon}...")
-    X, X_lstm, y_raw, ref_prices = [], [], [], []
+    X, X_lstm, y = [], [], []
     for i in range(LSTM_LOOK_BACK, len(scaled_df) - horizon):
         X.append(scaled_df.iloc[i-LSTM_LOOK_BACK:i].values)
         X_lstm.append(scaled_df[lstm_features].iloc[i-LSTM_LOOK_BACK:i].values)
-        # Цель: log-доходность от текущей цены (позиция i) до цены через h дней.
-        y_raw.append(np.log(raw_close[i + horizon] / raw_close[i]))
-        ref_prices.append(raw_close[i])
-    X, X_lstm = np.array(X), np.array(X_lstm)
-    y_raw = np.array(y_raw)
-    ref_prices = np.array(ref_prices)
-
-    # Масштабируем лог-доходности в [0,1] для стабильного обучения LSTM.
-    return_scaler = MinMaxScaler()
-    y = return_scaler.fit_transform(y_raw.reshape(-1, 1)).flatten()
+        y.append(scaled_df['Close'].iloc[i + horizon])
+    X, X_lstm, y = np.array(X), np.array(X_lstm), np.array(y)
     logger.info(f"Total sequences: {len(X)} | XGB shape={X.shape}, LSTM shape={X_lstm.shape}")
 
     # Защитная валидация: walk-forward с 80/85/90% сплитами требует разумного размера выборки.
@@ -1101,27 +1097,23 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         meta_test = np.column_stack((lstm_test_preds, xgb_test_preds))
         test_preds = meta_learner.predict(meta_test)
 
-        # OOS остатки в пространстве нескалированных лог-доходностей.
-        test_preds_lr = return_scaler.inverse_transform(test_preds.reshape(-1, 1)).flatten()
-        y_test_lr     = return_scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
+        # Собираем OOS-остатки для CI (обучение после цикла)
         oos_meta_list.append(meta_test)
-        oos_residuals_list.append(y_test_lr - test_preds_lr)
+        oos_residuals_list.append(y_test - test_preds)
         oos_y_list.append(y_test)
 
-        # Метрики в пространстве цен: ref_price * exp(log_return).
-        ref_test = ref_prices[train_end:test_end]
-        test_preds_prices = ref_test * np.exp(test_preds_lr)
-        y_test_prices     = ref_test * np.exp(y_test_lr)
+        test_preds_inv = close_scaler.inverse_transform(test_preds.reshape(-1, 1)).flatten()
+        y_test_inv = close_scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
 
-        rmse = np.sqrt(mean_squared_error(y_test_prices, test_preds_prices))
-        mae = mean_absolute_error(y_test_prices, test_preds_prices)
-        r2 = r2_score(y_test_prices, test_preds_prices)
+        rmse = np.sqrt(mean_squared_error(y_test_inv, test_preds_inv))
+        mae = mean_absolute_error(y_test_inv, test_preds_inv)
+        r2 = r2_score(y_test_inv, test_preds_inv)
 
         rmses.append(rmse)
         maes.append(mae)
         r2s.append(r2)
 
-        final_pred.extend(test_preds_prices.tolist())
+        final_pred.extend(test_preds_inv)
         models.append((lstm_models_split, xgb_model, meta_learner))
 
     # Освобождение GPU-памяти: для финального прогноза нужен только последний
@@ -1259,18 +1251,13 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     xgb_pred_scaled = best_xgb_model.predict(current_scaled_flat)[0]
 
     meta_input = np.array([[lstm_pred_scaled, xgb_pred_scaled]])
-    pred_log_return_scaled = best_meta_learner.predict(meta_input)[0]
+    pred_close_scaled = best_meta_learner.predict(meta_input)[0]
+    pred_close = close_scaler.inverse_transform([[pred_close_scaled]])[0][0]
 
-    # Обратное преобразование: scaled log-return → unscaled log-return → price.
-    last_close_price = float(raw_close[-1])
-    pred_log_return = return_scaler.inverse_transform([[pred_log_return_scaled]])[0][0]
-    pred_close = last_close_price * np.exp(pred_log_return)
-
-    # CI: остатки квантильных моделей уже в пространстве unscaled лог-доходностей.
     lower_residual = best_lower_model.predict(meta_input)[0]
     upper_residual = best_upper_model.predict(meta_input)[0]
-    lower = last_close_price * np.exp(pred_log_return + lower_residual)
-    upper = last_close_price * np.exp(pred_log_return + upper_residual)
+    lower = close_scaler.inverse_transform([[pred_close_scaled + lower_residual]])[0][0]
+    upper = close_scaler.inverse_transform([[pred_close_scaled + upper_residual]])[0][0]
     if lower > upper:
         lower, upper = upper, lower
 
@@ -1284,13 +1271,9 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         f"Lower CI={lower:.2f}, Upper CI={upper:.2f}"
     )
 
-    # real_prices_oos: цены из OOS-окон walk-forward (для графика и диагностики).
-    y_lr_tail = return_scaler.inverse_transform(y[-len(final_pred):].reshape(-1, 1)).flatten()
-    real_prices_oos = ref_prices[-len(final_pred):] * np.exp(y_lr_tail)
-
     return (
         data,
-        real_prices_oos,
+        close_scaler.inverse_transform(y[-len(final_pred):].reshape(-1, 1)).flatten(),
         final_pred,
         forecasts,
         forecast_dates,
@@ -1299,7 +1282,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         avg_mae,
         avg_r2,
         scaler,
-        return_scaler,
+        close_scaler,
         features
     )
 
