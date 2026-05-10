@@ -809,22 +809,26 @@ def optimize_xgboost_params(X_train, y_train, n_trials=20):
 
 
 def optimize_ridge_alpha(meta_features: np.ndarray, y_true: np.ndarray, n_trials: int = 20) -> float:
+    """Подбор Ridge alpha через Optuna с R² scoring.
+
+    v16-B1.1: заменён neg_MSE на R². R² штрафует одновременно и за абсолютную
+    ошибку, и за слабую корреляцию (R² = 0 для предсказания константы = mean(y)).
+    Это компромисс между MSE-only (vs мы получали LSTM=0) и correlation-only
+    (vs модель сжимается к среднему). Стандартная sklearn-метрика, не требует
+    custom scorer.
+    """
     from sklearn.model_selection import cross_val_score
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     def objective(trial):
-        # TODO (B1): рассмотреть переход на directional scoring (Sharpe / IC /
-        # direction accuracy) — структурно правильнее, чем MSE: модели перестанут
-        # скатываться к предсказанию среднего, что критично для финансовых рядов
-        # с низким signal-to-noise.
         alpha = trial.suggest_float('alpha', 1e-3, 100.0, log=True)
         scores = cross_val_score(
             Ridge(alpha=alpha, positive=True), meta_features, y_true,
-            cv=min(5, len(y_true)), scoring='neg_mean_squared_error'
+            cv=min(5, len(y_true)), scoring='r2'
         )
-        return float(-scores.mean())
+        return float(scores.mean())
 
-    study = optuna.create_study(direction='minimize')
+    study = optuna.create_study(direction='maximize')
     study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
     return float(study.best_params['alpha'])
 
