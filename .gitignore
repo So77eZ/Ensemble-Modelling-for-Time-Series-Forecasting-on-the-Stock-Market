@@ -36,5 +36,9 @@ env/
 .DS_Store
 Thumbs.db
 
-# oldChangelog - старый файл с изменениями, который не нужен в репозитории 
+# oldChangelog - старый файл с изменениями, который не нужен в репозитории
 oldCHANGELOG.md
+
+# Обзор литературы — рабочий документ, не для публикации
+literature_review.md
+.alt_research

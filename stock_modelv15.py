@@ -1377,13 +1377,22 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
                 logger.warning(f"  No trading data available after {forecast_date_key}")
                 continue
         
-        # Вычисляем метрики
+        # Вычисляем метрики модели
         error = abs(forecast_price - real_price)
         error_pct = (error / real_price) * 100
         in_ci = lower_ci <= real_price <= upper_ci
         forecast_dir = 'up' if (base_price is None or forecast_price >= base_price) else 'down'
         real_dir     = 'up' if (base_price is None or real_price     >= base_price) else 'down'
         dir_correct  = forecast_dir == real_dir
+
+        # Naïve baseline: предсказывает последнюю известную цену без изменений
+        naive_price = base_price if base_price is not None else real_price
+        naive_error = abs(naive_price - real_price)
+        naive_error_pct = (naive_error / real_price) * 100
+
+        # Доходности относительно базовой цены (для R² on returns и IC)
+        model_return_pct = (forecast_price - naive_price) / naive_price * 100 if naive_price else 0.0
+        real_return_pct  = (real_price    - naive_price) / naive_price * 100 if naive_price else 0.0
 
         backtest_results.append({
             'horizon': horizon,
@@ -1399,13 +1408,19 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
             'forecast_dir': forecast_dir,
             'real_dir': real_dir,
             'dir_correct': dir_correct,
+            'naive_price': naive_price,
+            'naive_error': naive_error,
+            'naive_error_pct': naive_error_pct,
+            'model_return_pct': model_return_pct,
+            'real_return_pct': real_return_pct,
         })
-        
+
         logger.info(f"  Forecast date: {forecast_date.strftime('%Y-%m-%d')}")
         logger.info(f"  Actual date used: {actual_date.strftime('%Y-%m-%d')}")
         logger.info(f"  Forecast: {forecast_price:.2f} RUB")
         logger.info(f"  Real: {real_price:.2f} RUB")
         logger.info(f"  Error: {error:.2f} RUB ({error_pct:.2f}%)")
+        logger.info(f"  Naïve: {naive_price:.2f} RUB | Error: {naive_error:.2f} RUB ({naive_error_pct:.2f}%)")
         logger.info(f"  CI: [{lower_ci:.2f}, {upper_ci:.2f}]")
         logger.info(f"  Real price in CI: {'✓ YES' if in_ci else '✗ NO'}")
         logger.info(f"  Direction: forecast={forecast_dir}, real={real_dir} {'[ok]' if dir_correct else '[no]'}")
@@ -1883,9 +1898,10 @@ if __name__ == '__main__':
                     print(f"  Actual date:  {res['actual_date'].strftime('%Y-%m-%d')} (next trading day)")
                 else:
                     print(f"  Date:         {res['forecast_date'].strftime('%Y-%m-%d')}")
-                print(f"  Forecast:     {res['forecast']:.2f} RUB")
                 print(f"  Real:         {res['real']:.2f} RUB")
-                print(f"  Error:        {res['error']:.2f} RUB ({res['error_pct']:.2f}%)")
+                print(f"  Forecast:     {res['forecast']:.2f} RUB  | Error: {res['error']:.2f} RUB ({res['error_pct']:.2f}%)")
+                print(f"  Naive:        {res['naive_price']:.2f} RUB  | Error: {res['naive_error']:.2f} RUB ({res['naive_error_pct']:.2f}%)")
+                print(f"  Return:       model {res['model_return_pct']:+.2f}%  |  real {res['real_return_pct']:+.2f}%")
                 print(f"  CI:           [{res['lower_ci']:.2f}, {res['upper_ci']:.2f}]")
                 print(f"  In CI:        {'YES' if res['in_ci'] else 'NO'}")
                 dir_mark = "[ok]" if res['dir_correct'] else "[no]"
@@ -1893,11 +1909,22 @@ if __name__ == '__main__':
 
             avg_error = np.mean([r['error'] for r in results_list])
             avg_error_pct = np.mean([r['error_pct'] for r in results_list])
+            avg_naive_error = np.mean([r['naive_error'] for r in results_list])
+            avg_naive_error_pct = np.mean([r['naive_error_pct'] for r in results_list])
             ci_coverage = sum([r['in_ci'] for r in results_list]) / len(results_list) * 100
             dir_accuracy = sum([r['dir_correct'] for r in results_list]) / len(results_list) * 100
+            vs_naive = "лучше Naive" if avg_error_pct < avg_naive_error_pct else "хуже Naive"
+
+            real_rets = [r['real_return_pct'] for r in results_list]
+            model_rets = [r['model_return_pct'] for r in results_list]
+            r2_on_rets = r2_score(real_rets, model_rets) if len(results_list) >= 2 else float('nan')
+            ic_val = pd.Series(model_rets).corr(pd.Series(real_rets), method='spearman') if len(results_list) >= 2 else float('nan')
 
             print(f"\nAVERAGE METRICS:")
-            print(f"  Average Error:  {avg_error:.2f} RUB ({avg_error_pct:.2f}%)")
+            print(f"  Model Error:    {avg_error:.2f} RUB ({avg_error_pct:.2f}%)")
+            print(f"  Naive Error:    {avg_naive_error:.2f} RUB ({avg_naive_error_pct:.2f}%) | модель {vs_naive}")
+            print(f"  R2 on returns:  {r2_on_rets:.3f}  (на {len(results_list)} горизонтах)")
+            print(f"  IC (Spearman):  {ic_val:.3f}")
             print(f"  CI Coverage:    {ci_coverage:.1f}%")
             print(f"  Direction Accuracy: {dir_accuracy:.1f}%")
             print(f"  Total forecasts checked: {len(results_list)}")
@@ -1931,15 +1958,19 @@ if __name__ == '__main__':
                         f.write(f"  Actual date:  {res['actual_date'].strftime('%Y-%m-%d')} (next trading day)\n")
                     else:
                         f.write(f"  Date:         {res['forecast_date'].strftime('%Y-%m-%d')}\n")
-                    f.write(f"  Forecast:     {res['forecast']:.2f} RUB\n")
                     f.write(f"  Real:         {res['real']:.2f} RUB\n")
-                    f.write(f"  Error:        {res['error']:.2f} RUB ({res['error_pct']:.2f}%)\n")
+                    f.write(f"  Forecast:     {res['forecast']:.2f} RUB | Error: {res['error']:.2f} RUB ({res['error_pct']:.2f}%)\n")
+                    f.write(f"  Naive:        {res['naive_price']:.2f} RUB | Error: {res['naive_error']:.2f} RUB ({res['naive_error_pct']:.2f}%)\n")
+                    f.write(f"  Return:       model {res['model_return_pct']:+.2f}%  |  real {res['real_return_pct']:+.2f}%\n")
                     f.write(f"  CI:           [{res['lower_ci']:.2f}, {res['upper_ci']:.2f}]\n")
                     f.write(f"  In CI:        {'YES' if res['in_ci'] else 'NO'}\n")
                     dir_mark = "[ok]" if res['dir_correct'] else "[no]"
                     f.write(f"  Direction:    {res['forecast_dir']} (real: {res['real_dir']}) {dir_mark}\n")
                 f.write(f"\nAVERAGE METRICS:\n")
-                f.write(f"Average Error: {avg_error:.2f} RUB ({avg_error_pct:.2f}%)\n")
+                f.write(f"Model Error:  {avg_error:.2f} RUB ({avg_error_pct:.2f}%)\n")
+                f.write(f"Naive Error:  {avg_naive_error:.2f} RUB ({avg_naive_error_pct:.2f}%) -- модель {vs_naive}\n")
+                f.write(f"R2 on returns: {r2_on_rets:.3f}\n")
+                f.write(f"IC (Spearman): {ic_val:.3f}\n")
                 f.write(f"CI Coverage: {ci_coverage:.1f}%\n")
                 f.write(f"Direction Accuracy: {dir_accuracy:.1f}%\n")
                 f.write(f"Total forecasts checked: {len(results_list)}\n")
