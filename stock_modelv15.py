@@ -939,6 +939,19 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     X, X_lstm, y = np.array(X), np.array(X_lstm), np.array(y)
     logger.info(f"Total sequences: {len(X)} | XGB shape={X.shape}, LSTM shape={X_lstm.shape}")
 
+    # Защитная валидация: walk-forward с 80/85/90% сплитами требует разумного размера выборки.
+    # При len(X) < 200 последние 5% дают <10 тестовых семплов — метрики становятся бессмысленными.
+    # Реальный пример (TCSG до v15.13): 1187 sequences, последний test=59, R²=-1.0.
+    _MIN_SEQUENCES_HARD = 200
+    _MIN_SEQUENCES_WARN = 500
+    if len(X) < _MIN_SEQUENCES_HARD:
+        logger.error(f"Недостаточно данных для walk-forward: {len(X)} sequences (минимум {_MIN_SEQUENCES_HARD}). "
+                     f"Метрики и LSTM-обучение не будут стабильными. Прерываю обучение для {ticker}.")
+        return None
+    if len(X) < _MIN_SEQUENCES_WARN:
+        logger.warning(f"Малая выборка: {len(X)} sequences (рекомендуется ≥{_MIN_SEQUENCES_WARN}). "
+                       f"OOS-метрики могут быть нестабильны, особенно последний split (~{int(0.1*len(X))} семплов).")
+
     splits = [
         (int(0.8 * len(X)), int(0.85 * len(X))),
         (int(0.85 * len(X)), int(0.9 * len(X))),
@@ -1087,6 +1100,16 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
 
         final_pred.extend(test_preds_inv)
         models.append((lstm_models_split, xgb_model, meta_learner))
+
+    # Освобождение GPU-памяти: для финального прогноза нужен только последний
+    # ансамбль (models[-1]); LSTM-модели предыдущих сплитов больше не используются.
+    # На каждый горизонт вызов prepare_and_train_model() создаёт 3 splits × 3 seeds = 9 LSTM,
+    # без очистки они копятся в VRAM при последовательных h=1/h=2/h=3 (×3 = 27 моделей).
+    if torch.cuda.is_available() and len(models) > 1:
+        for _i in range(len(models) - 1):
+            _lstm_old, _xgb_old, _meta_old = models[_i]
+            models[_i] = ([], _xgb_old, _meta_old)  # обнуляем ссылки на LSTM-тензоры
+        torch.cuda.empty_cache()
 
     avg_rmse = np.mean(rmses)
     avg_mae = np.mean(maes)
