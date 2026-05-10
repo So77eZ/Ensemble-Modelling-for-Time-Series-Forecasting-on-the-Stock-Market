@@ -65,6 +65,13 @@ from fundamentals_loader import load_dividend_features
 _MACRO_COLS    = ['usd_rub_hist', 'cbr_rate', 'brent_price', 'imoex', 'rtsi']
 _FUND_DIV_COLS = ['div_days_to_next', 'div_next_amount', 'div_days_since_last']
 
+# Подмножество признаков, которое получает LSTM.
+# XGB видит полный набор (~36 фичей), LSTM — только сырое OHLCV + return + контекст
+# волатильности. Идея: дать LSTM уникальное «сырое временное» представление,
+# чтобы он не дублировал feature engineering, который XGB и так выучит сам.
+# Это попытка вернуть LSTM комплементарный вклад в стэкинг (см. improvements.md).
+_LSTM_FEATURES = ['Open', 'High', 'Low', 'Close', 'Volume', 'Price_Change_1', 'Vol_Return_10']
+
 from config import (
     LSTM_LOOK_BACK, LSTM_EPOCHS, LSTM_PATIENCE, LSTM_BATCH_SIZE,
     LSTM_LEARNING_RATE, LSTM_DROPOUT_RATE, LSTM_UNITS,
@@ -787,13 +794,18 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     close_scaler = MinMaxScaler()
     close_scaler.fit(data[['Close']])
 
+    # LSTM получает подмножество фич (см. _LSTM_FEATURES); XGB — полный набор.
+    lstm_features = [f for f in _LSTM_FEATURES if f in features]
+    logger.info(f"LSTM features ({len(lstm_features)}/{len(features)}): {lstm_features}")
+
     logger.info(f"Preparing sequences with look_back={LSTM_LOOK_BACK}, horizon={horizon}...")
-    X, y = [], []
+    X, X_lstm, y = [], [], []
     for i in range(LSTM_LOOK_BACK, len(scaled_df) - horizon):
         X.append(scaled_df.iloc[i-LSTM_LOOK_BACK:i].values)
+        X_lstm.append(scaled_df[lstm_features].iloc[i-LSTM_LOOK_BACK:i].values)
         y.append(scaled_df['Close'].iloc[i + horizon])
-    X, y = np.array(X), np.array(y)
-    logger.info(f"Total sequences: {len(X)}")
+    X, X_lstm, y = np.array(X), np.array(X_lstm), np.array(y)
+    logger.info(f"Total sequences: {len(X)} | XGB shape={X.shape}, LSTM shape={X_lstm.shape}")
 
     splits = [
         (int(0.8 * len(X)), int(0.85 * len(X))),
@@ -829,6 +841,8 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
 
         X_train, y_train = X[:train_end], y[:train_end]
         X_test, y_test = X[train_end:test_end], y[train_end:test_end]
+        X_lstm_train = X_lstm[:train_end]
+        X_lstm_test  = X_lstm[train_end:test_end]
         logger.info(f"Train size: {len(X_train)}, Test size: {len(X_test)}")
 
         logger.info(f"Training LSTM ensemble ({len(ENSEMBLE_SEEDS)} seeds)...")
@@ -839,7 +853,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
             tf.random.set_seed(_seed)
             np.random.seed(_seed)
             _m = Sequential()
-            _m.add(Input(shape=(X_train.shape[1], X_train.shape[2])))
+            _m.add(Input(shape=(X_lstm_train.shape[1], X_lstm_train.shape[2])))
             _m.add(LSTM(units=lstm_units_1, return_sequences=True))
             _m.add(Dropout(best_lstm_params['dropout']))
             _m.add(LSTM(units=lstm_units_2, return_sequences=True))
@@ -851,7 +865,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
             _m.compile(optimizer=Adam(learning_rate=best_lstm_params['lr']), loss='mean_squared_error')
             _early = EarlyStopping(monitor='val_loss', patience=LSTM_PATIENCE, restore_best_weights=True)
             _hist = _m.fit(
-                X_train, y_train,
+                X_lstm_train, y_train,
                 epochs=LSTM_EPOCHS,
                 batch_size=LSTM_BATCH_SIZE,
                 validation_split=0.2,
@@ -909,7 +923,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
 
         logger.info("Generating level 0 predictions...")
         lstm_train_preds = np.mean(
-            [_m.predict(X_train, verbose=0).flatten() for _m in lstm_models_split], axis=0
+            [_m.predict(X_lstm_train, verbose=0).flatten() for _m in lstm_models_split], axis=0
         )
         xgb_train_preds = xgb_model.predict(X_train_flat)
 
@@ -923,7 +937,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         last_y_train = y_train
 
         lstm_test_preds = np.mean(
-            [_m.predict(X_test, verbose=0).flatten() for _m in lstm_models_split], axis=0
+            [_m.predict(X_lstm_test, verbose=0).flatten() for _m in lstm_models_split], axis=0
         )
         X_test_flat = X_test.reshape(X_test.shape[0], -1)
         xgb_test_preds = xgb_model.predict(X_test_flat)
@@ -1064,9 +1078,10 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     last_scaled = scaler.transform(last_features)
     last_scaled_df = pd.DataFrame(last_scaled, columns=features, index=last_features.index)
 
-    _input = last_scaled_df.values.reshape(1, LSTM_LOOK_BACK, len(features))
+    # LSTM-вход — только подмножество фич (см. _LSTM_FEATURES)
+    _lstm_input = last_scaled_df[lstm_features].values.reshape(1, LSTM_LOOK_BACK, len(lstm_features))
     lstm_pred_scaled = float(np.mean(
-        [_m.predict(_input, verbose=0)[0][0] for _m in best_lstm_ensemble]
+        [_m.predict(_lstm_input, verbose=0)[0][0] for _m in best_lstm_ensemble]
     ))
 
     current_scaled_flat = last_scaled.reshape(1, -1)
