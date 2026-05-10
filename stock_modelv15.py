@@ -496,10 +496,21 @@ def load_stock_data_moex_test(ticker_symbol, start_date, end_date):
 
     # YDEX (МКПАО Яндекс, листинг с 2024-07) склеивается с YNDX (Yandex N.V., до 2024-06).
     # Коэффициент обмена акций 1:1 — нормировка не нужна.
+    # Размечаем строки колонкой is_post_restructure: 0 для YNDX-истории, 1 для YDEX —
+    # модель видит структурный шок 2024-07 (смена юрисдикции NL→RU, разный shareholder base)
+    # и может учить разные режимы вместо смешанного ряда.
     if ticker_symbol == 'YDEX':
         yndx = _load_single_ticker('YNDX', start_date, end_date)
         ydex = _load_single_ticker('YDEX', start_date, end_date)
-        parts = [p for p in [yndx, ydex] if p is not None and not p.empty]
+        parts = []
+        if yndx is not None and not yndx.empty:
+            yndx = yndx.copy()
+            yndx['is_post_restructure'] = 0
+            parts.append(yndx)
+        if ydex is not None and not ydex.empty:
+            ydex = ydex.copy()
+            ydex['is_post_restructure'] = 1
+            parts.append(ydex)
         if not parts:
             logger.error("YDEX: не удалось загрузить ни YNDX, ни YDEX")
             return None
@@ -510,7 +521,9 @@ def load_stock_data_moex_test(ticker_symbol, start_date, end_date):
             logger.info(f"Стык YNDX/YDEX: последняя YNDX={last_yndx:.2f}, первая YDEX={first_ydex:.2f}, ratio={ratio:.4f}")
         merged = pd.concat(parts, ignore_index=True)
         merged = merged.sort_values('Date').drop_duplicates(subset='Date').reset_index(drop=True)
-        logger.info(f"YNDX+YDEX итого: {len(merged)} строк ({merged['Date'].min()} до {merged['Date'].max()})")
+        logger.info(f"YNDX+YDEX итого: {len(merged)} строк ({merged['Date'].min()} до {merged['Date'].max()}); "
+                    f"is_post_restructure: 0 на {(merged['is_post_restructure']==0).sum()} строках, "
+                    f"1 на {(merged['is_post_restructure']==1).sum()} строках")
         return merged
 
     return _load_single_ticker(ticker_symbol, start_date, end_date)
@@ -751,6 +764,8 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         *[c for c in _MACRO_COLS if c in data.columns and not data[c].isna().all()],
         # --- Дивидендные (time-varying, загружаются из fundamentals_loader) ---
         *[c for c in _FUND_DIV_COLS if c in data.columns and not data[c].isna().all()],
+        # --- Дамми реструктуризации (только для склеенных тикеров типа YDEX = YNDX+YDEX) ---
+        *(['is_post_restructure'] if 'is_post_restructure' in data.columns else []),
     ]
 
     # Granger-скрининг: убираем макро- и дивидендные признаки, не предсказывающие Close (p >= 0.05)
