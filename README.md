@@ -22,7 +22,7 @@
 | `improvements.md` | Анализ плюсов/минусов решения и рекомендации по улучшению |
 | `benchmarks.md` | Воспроизводимые результаты бэктестов по версиям |
 | `requirements.txt` | Зафиксированные версии всех зависимостей для воспроизводимости окружения |
-| `.vscode/settings.json` | Настройки VS Code: интерпретатор venv, подавление ложных предупреждений Pylance для TF |
+| `.vscode/settings.json` | Настройки VS Code: интерпретатор venv, подавление ложных предупреждений Pylance |
 
 ## Запуск
 
@@ -104,7 +104,7 @@ python stock_modelv15.py --ticker SBER --presentation --history-window 90
 - Метрики качества: RMSE, MAE, R²
 - **Тест Льюнга–Бокса** (`min(20, len//2)` лагов) на OOS-остатках — диагностика автокорреляции; при менее 2 лагах пропускается; результат в stdout и лог-файле
 - **Тест Грэнжера** на топ-15 признаках по XGBoost feature importance — формальное обоснование выбора фичей
-- Фиксированный `RANDOM_SEED = 42` (`random`, `numpy`, `tensorflow`) — воспроизводимые результаты между прогонами
+- Фиксированный `RANDOM_SEED = 42` (`random`, `numpy`, `torch`, `cuda`) — воспроизводимые результаты между прогонами
 
 ### 6. Прогнозирование
 
@@ -129,12 +129,13 @@ python stock_modelv15.py --ticker SBER --presentation --history-window 90
 - **Feature engineering:** технические индикаторы, фундаментальный анализ
 - **Интеграция API:** MOEX ISS, T-Bank Invest REST API, ЦБ РФ XML API, ЦБ РФ SOAP DailyInfo
 - **Статистическая диагностика:** тест Льюнга–Бокса, тест Грэнджера, Granger pre-screening
-- **Воспроизводимость:** фиксированный `RANDOM_SEED=42` для всех источников случайности (Python, NumPy, TensorFlow)
+- **Воспроизводимость:** фиксированный `RANDOM_SEED=42` для всех источников случайности (Python, NumPy, PyTorch, CUDA)
 
 ## Инструментарий
 
 - **Язык:** Python 3.12
-- **Библиотеки:** `tensorflow/keras`, `xgboost`, `optuna`, `scikit-learn`, `statsmodels`, `pandas`, `numpy`, `matplotlib`, `moexalgo`, `requests`, `python-dotenv`
+- **Библиотеки:** `torch` (PyTorch + CUDA 12.8 для LSTM на GPU), `xgboost` (GPU), `optuna`, `scikit-learn`, `statsmodels`, `pandas`, `numpy`, `matplotlib`, `moexalgo`, `requests`, `python-dotenv`
+- **GPU:** RTX 50 Blackwell (sm_120) поддерживается через `torch==2.11.0+cu128`. Установка: `pip install torch --index-url https://download.pytorch.org/whl/cu128`
 - **Источники данных:** MOEX ISS API, T-Bank Invest API, ЦБ РФ XML API (USD/RUB), ЦБ РФ SOAP DailyInfo (ставка), MOEX ISS BRN фьючерс (Brent)
 - **Среда:** venv, VS Code
 

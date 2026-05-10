@@ -4,7 +4,7 @@
 
 ## Обзор
 
-Система прогнозирования рыночных цен акций российского рынка (MOEX). Реализует стэкинг-ансамбль LSTM + XGBoost с доверительными интервалами на основе квантильной регрессии. Поддерживает два режима: прогноз на будущее и бэктест на исторических данных. Начиная с v15 включает time-varying макропризнаки (USD/RUB, ставка ЦБ, Brent), Granger pre-screening и статистическую диагностику остатков. С v15.1 — фиксированный seed (`RANDOM_SEED=42`) и метрика Direction Accuracy. С v15.2 — признаки сезонности (`day_of_week`, `month`, `quarter`). С v15.3 — Ridge мета-леарнер с интерпретируемыми весами. С v15.4 — автосклейка YNDX+YDEX и Ljung-Box guard для коротких рядов. С v15.6 — Optuna-оптимизация alpha Ridge: 20-trial поиск на накопленных OOS-данных walk-forward. С v15.7 — IMOEX и RTSI как time-varying признаки рыночного контекста. С v15.8 — LSTM Ensemble по seeds (N=3): три модели с разными инициализациями, усреднение до Ridge. С v15.9 — дивидендные time-varying признаки через MOEX ISS (`fundamentals_loader.py`): `div_days_to_next`, `div_next_amount`, `div_days_since_last`; работает для любого тикера MOEX; look-ahead bias исключён окном 45 дней.
+Система прогнозирования рыночных цен акций российского рынка (MOEX). Реализует стэкинг-ансамбль LSTM + XGBoost с доверительными интервалами на основе квантильной регрессии. Поддерживает два режима: прогноз на будущее и бэктест на исторических данных. Начиная с v15 включает time-varying макропризнаки (USD/RUB, ставка ЦБ, Brent), Granger pre-screening и статистическую диагностику остатков. С v15.1 — фиксированный seed (`RANDOM_SEED=42`) и метрика Direction Accuracy. С v15.2 — признаки сезонности (`day_of_week`, `month`, `quarter`). С v15.3 — Ridge мета-леарнер с интерпретируемыми весами. С v15.4 — автосклейка YNDX+YDEX и Ljung-Box guard для коротких рядов. С v15.6 — Optuna-оптимизация alpha Ridge: 20-trial поиск на накопленных OOS-данных walk-forward. С v15.7 — IMOEX и RTSI как time-varying признаки рыночного контекста. С v15.8 — LSTM Ensemble по seeds (N=3): три модели с разными инициализациями, усреднение до Ridge. С v15.9 — дивидендные time-varying признаки через MOEX ISS (`fundamentals_loader.py`): `div_days_to_next`, `div_next_amount`, `div_days_since_last`; работает для любого тикера MOEX; look-ahead bias исключён окном 45 дней. С v15.10 — `Ridge(positive=True)` (запрет инверсии LSTM), LSTM EPOCHS 10→100, умное сообщение Ljung-Box (различает ARCH от momentum), SSL retry. С v15.11 — раздельный feature set (LSTM 7 фич, XGB 39): дублирование убивало OOS-полезность LSTM, после фикса ненулевых LSTM_coef стало 6/15 вместо 1/15. С v15.12 — дамми `is_post_restructure` для YDEX (структурный шок 2024-07). С v15.13 — TCSG/T автопереход на новый тикер (R² +95pp в среднем после фикса). С v15.14 — миграция LSTM с TensorFlow на **PyTorch GPU** (RTX 50 Blackwell, CUDA 12.8): время прогона ×4, на seed-уровне ×5; защитная валидация размера данных (HARD < 200, WARN < 500 sequences); очистка GPU-памяти после walk-forward.
 
 ---
 
@@ -79,8 +79,8 @@ python .\stock_modelv15.py --ticker GAZP --optimize --trials 30 --no-gui
 | Переменная           | По умолчанию | Описание                                |
 | -------------------- | ------------ | --------------------------------------- |
 | `LSTM_LOOK_BACK`     | `30`         | Длина входной последовательности (дней) |
-| `LSTM_EPOCHS`        | `10`         | Максимальное число эпох обучения        |
-| `LSTM_PATIENCE`      | `3`          | Терпение для EarlyStopping              |
+| `LSTM_EPOCHS`        | `100`        | Максимальное число эпох обучения (с v15.10) |
+| `LSTM_PATIENCE`      | `10`         | Терпение для EarlyStopping (с v15.10)       |
 | `LSTM_BATCH_SIZE`    | `32`         | Размер батча                            |
 | `LSTM_LEARNING_RATE` | `0.001`      | Скорость обучения Adam                  |
 | `LSTM_DROPOUT_RATE`  | `0.2`        | Доля дропаута                           |
@@ -195,34 +195,38 @@ python .\stock_modelv15.py --ticker GAZP --optimize --trials 30 --no-gui
 │                     АНСАМБЛЕВАЯ МОДЕЛЬ                          │
 │                                                                 │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Уровень 0 — базовые модели                              │   │
+│  │  Уровень 0 — базовые модели (раздельный feature set v15.11) │
 │  │                                                          │   │
 │  │  ┌─────────────────────┐  ┌─────────────────────────┐    │   │
-│  │  │      LSTM (3 слоя)  │  │     XGBoost Regressor   │    │   │
-│  │  │                     │  │  (вход: X сплющен       │    │   │
-│  │  │  Input(30, 36–39)   │  │  в 30×(36–39) призн.   │    │   │
-│  │  │  LSTM(units)        │  │                         │    │   │
+│  │  │  LSTMRegressor      │  │     XGBoost Regressor   │    │   │
+│  │  │  (PyTorch, GPU)     │  │  (вход: X сплющен       │    │   │
+│  │  │  Input(30, 7)       │  │  в 30×(39–41) призн.    │    │   │
+│  │  │  LSTM(units)        │  │  device='cuda')         │    │   │
 │  │  │  Dropout            │  └─────────────────────────┘    │   │
 │  │  │  LSTM(units//2)     │           │                     │   │
 │  │  │  Dropout×0.5        │           │                     │   │
 │  │  │  LSTM(units//2)     │           │                     │   │
 │  │  │  Dropout            │           │                     │   │
-│  │  │  Dense(32, relu)    │           │                     │   │
+│  │  │  Dense(32, ReLU)    │           │                     │   │
 │  │  │  Dense(1)           │           │                     │   │
+│  │  │  входы: OHLCV +     │           │                     │   │
+│  │  │  Price_Change_1 +   │           │                     │   │
+│  │  │  Vol_Return_10 (7)  │           │                     │   │
 │  │  └──────────┬──────────┘           │                     │   │
 │  │             └────────────┬─────────┘                     │   │
 │  └──────────────────────────┼───────────────────────────────┘   │
 │                             ▼                                   │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Уровень 0.5 — LSTM Ensemble (v15.8)                       │   │
-│  │  LSTM×3 seeds [42,7,123] → среднее lstm_avg_pred          │   │
+│  │  Уровень 0.5 — LSTM Ensemble (v15.8)                     │   │
+│  │  LSTM×3 seeds [42,7,123] → среднее lstm_avg_pred         │   │
 │  └──────────────────────────┼───────────────────────────────┘   │
 │                             ▼                                   │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Уровень 1 — Meta-Learner (Ridge, v15.3+v15.6)           │   │
+│  │  Уровень 1 — Meta-Learner (Ridge positive=True, v15.10)  │   │
 │  │  Вход: [lstm_avg_pred, xgb_pred] (2 признака)            │   │
 │  │  alpha: Optuna 20-trial log-uniform [1e-3,100] на OOS    │   │
-│  │  Ridge(alpha=best) → точечный прогноз Close              │   │
+│  │  Ridge(alpha=best, positive=True) → прогноз Close        │   │
+│  │  positive=True исключает артефакт инверсии LSTM          │   │
 │  │  coef_[0]=LSTM weight, coef_[1]=XGB weight (в лог)       │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │                                                                 │
@@ -314,7 +318,7 @@ python .\stock_modelv15.py --ticker GAZP --optimize --trials 30 --no-gui
 
 | Библиотека | Версия | Роль |
 | --- | --- | --- |
-| `tensorflow` / `keras` | 2.x+ | LSTM-нейросеть (CPU на Windows; GPU не поддерживается в TF 2.11+) |
+| `torch` | 2.11+cu128 | LSTM-нейросеть (PyTorch с v15.14, CUDA 12.8 для Windows native GPU; класс `LSTMRegressor` + `train_lstm_torch`) |
 | `xgboost` | 3.x+ | Градиентный бустинг + квантильная регрессия; GPU через `device='cuda'` |
 | `optuna` | 3.x | Байесовская оптимизация гиперпараметров |
 | `scikit-learn` | 1.x | `MinMaxScaler`, метрики (RMSE, MAE, R²) |
