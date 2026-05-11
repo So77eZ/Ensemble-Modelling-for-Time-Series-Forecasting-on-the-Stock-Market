@@ -21,12 +21,15 @@
 
 ```bash
 # Интерактивный режим (рекомендуется)
-python .\stock_modelv15.py
+python .\stock_modelv16.py
 
 # CLI-режим (headless, все параметры через аргументы)
-python .\stock_modelv15.py --ticker SBER --no-gui
-python .\stock_modelv15.py --ticker LKOH --backtest 2025-03-01
-python .\stock_modelv15.py --ticker GAZP --optimize --trials 30 --no-gui
+python .\stock_modelv16.py --ticker SBER --no-gui
+python .\stock_modelv16.py --ticker LKOH --backtest 2025-03-01
+python .\stock_modelv16.py --ticker GAZP --optimize --trials 30 --no-gui
+
+# Legacy v15 (для воспроизведения старых бенчмарков и A/B-сравнений архитектур)
+python .\stock_modelv15.py --ticker SBER --backtest 2026-05-05 --no-gui
 ```
 
 ### Аргументы CLI

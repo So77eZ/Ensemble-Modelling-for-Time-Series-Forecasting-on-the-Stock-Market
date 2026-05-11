@@ -10,8 +10,10 @@
 
 | Файл | Описание |
 | --- | --- |
-| `stock_modelv15.py` | Основной скрипт: загрузка данных, расчёт индикаторов, обучение ансамбля, прогнозирование |
+| `stock_modelv16.py` | **Текущая версия (production)**: основной скрипт — загрузка данных, расчёт индикаторов (включая 4 relative features), обучение ансамбля LSTM+XGBoost+Ridge с R² scoring для подбора Ridge alpha, прогнозирование |
+| `stock_modelv15.py` | **Legacy-версия**: предыдущая стабильная архитектура без relative features. Сохранена для воспроизведения исторических бенчмарков из `benchmarks.md` (~20 строк результатов v15.X) и для прямых A/B-сравнений архитектур при защите диплома |
 | `macro_loader.py` | Загрузка макроэкономических данных: USD/RUB (ЦБ РФ XML), ставка ЦБ (SOAP), Brent (MOEX ISS) |
+| `fundamentals_loader.py` | Дивидендные time-varying признаки через MOEX ISS (`div_days_to_next`, `div_next_amount`, `div_days_since_last`) |
 | `config.py` | Гиперпараметры LSTM и XGBoost (безопасно версионировать) |
 | `presentation_output.py` | Презентационный график для слайдов защиты: 16:9, русские подписи, 90% CI, PNG 1920x1080 |
 | `tests/` | Юнит-тесты: `test_ci_mode.py`, `test_multihorizon.py`, `test_macro_loader.py` |
@@ -21,6 +23,7 @@
 | `architecture.md` | Подробное описание архитектуры проекта и потока данных |
 | `improvements.md` | Анализ плюсов/минусов решения и рекомендации по улучшению |
 | `benchmarks.md` | Воспроизводимые результаты бэктестов по версиям |
+| `Q_AND_A.md` | Q&A с архитектурными решениями и обоснованием выбора подходов (включая отвергнутые гипотезы) |
 | `requirements.txt` | Зафиксированные версии всех зависимостей для воспроизводимости окружения |
 | `.vscode/settings.json` | Настройки VS Code: интерпретатор venv, подавление ложных предупреждений Pylance |
 
@@ -28,22 +31,26 @@
 
 ```bash
 # Интерактивный режим (запрашивает параметры)
-python stock_modelv15.py
+python stock_modelv16.py
 
 # Прогноз без GUI
-python stock_modelv15.py --ticker SBER --no-gui
+python stock_modelv16.py --ticker SBER --no-gui
 
 # Бэктест на заданную дату
-python stock_modelv15.py --ticker LKOH --backtest 2024-10-14 --ci-mode wide
+python stock_modelv16.py --ticker LKOH --backtest 2024-10-14 --ci-mode wide
 
 # Optuna-оптимизация (30 итераций)
-python stock_modelv15.py --ticker GAZP --optimize --trials 30 --no-gui
+python stock_modelv16.py --ticker GAZP --optimize --trials 30 --no-gui
 
 # Воспроизводимый бенчмарк (SBER, 2024-10-14, дефолтные гиперпараметры)
-python stock_modelv15.py --benchmark
+python stock_modelv16.py --benchmark
 
 # Презентационный график
-python stock_modelv15.py --ticker SBER --presentation --history-window 90
+python stock_modelv16.py --ticker SBER --presentation --history-window 90
+
+# Прямое сравнение архитектур (v15 vs v16) на одной дате
+python stock_modelv15.py --ticker SBER --backtest 2026-05-05 --no-gui
+python stock_modelv16.py --ticker SBER --backtest 2026-05-05 --no-gui
 ```
 
 | Флаг | Описание |
