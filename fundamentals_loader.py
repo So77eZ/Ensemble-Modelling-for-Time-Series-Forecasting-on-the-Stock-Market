@@ -114,3 +114,22 @@ def load_dividend_features(ticker: str, start: str, end: str) -> pd.DataFrame:
         f"диапазон {result['Date'].min().date()} — {result['Date'].max().date()}"
     )
     return result
+
+
+def get_ticker_shortname(ticker: str) -> str:
+    """Краткое наименование тикера из MOEX ISS. При ошибке возвращает сам тикер."""
+    url = f"https://iss.moex.com/iss/securities/{ticker}.json"
+    try:
+        resp = requests.get(url, params={'iss.meta': 'off'}, timeout=10, verify=certifi.where())
+        resp.raise_for_status()
+        j = resp.json()
+        cols = j['description']['columns']
+        rows = j['description']['data']
+        name_i = cols.index('name')
+        val_i  = cols.index('value')
+        shortname = next((r[val_i] for r in rows if r[name_i] == 'SHORTNAME'), None)
+        if shortname:
+            return shortname
+    except Exception as e:
+        logger.warning(f"shortname {ticker}: недоступен ({e})")
+    return ticker

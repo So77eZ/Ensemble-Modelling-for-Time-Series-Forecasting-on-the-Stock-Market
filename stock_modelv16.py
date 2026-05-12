@@ -61,7 +61,7 @@ if torch.cuda.is_available():
 
 from presentation_output import plot_presentation
 from macro_loader import load_macro_data
-from fundamentals_loader import load_dividend_features
+from fundamentals_loader import load_dividend_features, get_ticker_shortname
 
 _MACRO_COLS    = ['usd_rub_hist', 'cbr_rate', 'brent_price', 'imoex', 'rtsi']
 _FUND_DIV_COLS = ['div_days_to_next', 'div_next_amount', 'div_days_since_last']
@@ -1557,14 +1557,14 @@ def run_benchmark(data) -> dict:
 def get_user_inputs():
     """Собираем все параметры от пользователя в начале программы"""
     print("\n" + "="*60)
-    print("STOCK PRICE FORECASTING MODEL v15")
+    print("STOCK PRICE FORECASTING MODEL v16")
     print("="*60)
 
     # 0. Benchmark mode
-    print("\n0. Режим бенчмарка (воспроизводимый прогон для отслеживания качества модели)?")
-    print("   1 — Нет (по умолчанию)")
-    print("   2 — Да")
-    bm_choice = input("Ваш выбор [1/2, по умолчанию 1]: ").strip() or "1"
+    print("\n0. Режим бенчмарка:")
+    print("   [1] Нет (обычный режим)")
+    print("   [2] Да (воспроизводимый прогон для отслеживания качества)")
+    bm_choice = input("   Выбор [1/2, по умолчанию 1]: ").strip() or "1"
     if bm_choice == "2":
         print("\nПАРАМЕТРЫ БЕНЧМАРКА:")
         print(f"  Тикер:           {BENCHMARK_TICKER}")
@@ -1572,7 +1572,7 @@ def get_user_inputs():
         print(f"  CI-режим:        {BENCHMARK_CI_MODE} (5/95, вся история)")
         print(f"  Гиперпараметры:  дефолтные из config.py")
         print(f"  Примерное время: {BENCHMARK_APPROX_TIME}")
-        confirm = input("\nПродолжить? [y/n, по умолчанию y]: ").strip().lower()
+        confirm = input("   Продолжить? (y/n, по умолчанию y): ").strip().lower()
         if confirm == 'n':
             print("Выход из программы.")
             exit(0)
@@ -1580,66 +1580,63 @@ def get_user_inputs():
 
     # 1. Тикер
     ticker_input = input(
-        "\n1. Введите тикер (например: SBER, LKOH, GAZP) "
-        "или Enter для SBER: "
+        "\n1. Тикер (например: SBER, LKOH, GAZP) [по умолчанию SBER]: "
     ).strip().upper()
     ticker = ticker_input if ticker_input else 'SBER'
-    
+
     # 2. Режим работы
-    print("\n2. Выберите режим работы:")
-    print("   [1] Обычный прогноз (на будущее)")
-    print("   [2] Бэктест (проверка прогноза на известных данных)")
-    mode_input = input("Режим (1/2, по умолчанию 1): ").strip()
+    print("\n2. Режим работы:")
+    print("   [1] Прогноз (на будущее)")
+    print("   [2] Бэктест (проверка прогноза на исторических данных)")
+    mode_input = input("   Выбор [1/2, по умолчанию 1]: ").strip()
     backtest_mode = mode_input == '2'
-    
+
     backtest_date = None
     if backtest_mode:
         default_backtest = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
         backtest_input = input(
-            f"\n   Введите дату для бэктеста (YYYY-MM-DD, по умолчанию {default_backtest}): "
+            f"   Дата бэктеста (YYYY-MM-DD) [по умолчанию {default_backtest}]: "
         ).strip()
         backtest_date = backtest_input if backtest_input else default_backtest
         print(f"   Бэктест: обучение до {backtest_date}, проверка прогноза после")
-    
-    # 3. Оптимизация гиперпараметров
+
+    # 3. Гиперпараметры модели
     print("\n3. Гиперпараметры модели:")
     saved_lstm, saved_xgb = load_hyperparams(ticker)
-    
+
     if saved_lstm and saved_xgb:
-        print(f"   Найдены сохраненные параметры для {ticker}:")
+        print(f"   Найдены сохранённые параметры для {ticker}:")
         print(f"   LSTM: units={saved_lstm['units']}, dropout={saved_lstm['dropout']:.4f}, lr={saved_lstm['lr']:.6f}")
         print(f"   XGBoost: n_est={saved_xgb['n_estimators']}, depth={saved_xgb['max_depth']}, lr={saved_xgb['learning_rate']:.4f}")
-        use_saved = input("   Использовать сохраненные параметры? (y/n, по умолчанию y): ").strip().lower()
+        use_saved = input("   Использовать сохранённые параметры? (y/n, по умолчанию y): ").strip().lower()
         optimize = use_saved == 'n'
     else:
-        print(f"   Сохраненные параметры для {ticker} не найдены.")
-        optimize_input = input("   Запустить Optuna для поиска оптимальных параметров? (y/n, по умолчанию n): ").strip().lower()
-        optimize = optimize_input == 'y'
-    
+        print(f"   Сохранённые параметры для {ticker} не найдены.")
+        optimize_input = input("   Запустить Optuna для поиска оптимальных параметров? (y/n, по умолчанию y): ").strip().lower()
+        optimize = optimize_input != 'n'
+
     if optimize:
-        trials_input = input("   Количество итераций Optuna (по умолчанию 20): ").strip()
+        trials_input = input("   Количество итераций Optuna [по умолчанию 20]: ").strip()
         n_trials = int(trials_input) if trials_input.isdigit() else 20
     else:
         n_trials = 0
-    
-    # 4. Визуализация
-    print("\n4. Параметры визуализации:")
-    show_ci = input("   Показывать доверительные интервалы на графике? (y/n, по умолчанию n): ").strip().lower() == 'y'
-    show_plot = input("   Показывать график после обучения? (y/n, по умолчанию n): ").strip().lower() == 'y'
 
+    # 4. Визуализация
+    print("\n4. Визуализация:")
+    show_plot = input("   Показывать график после обучения? (y/n, по умолчанию y): ").strip().lower() != 'n'
+    show_ci   = input("   Показывать доверительные интервалы на графике? (y/n, по умолчанию y): ").strip().lower() != 'n'
+
+    # 5. Режим доверительных интервалов
     print("\n5. Режим доверительных интервалов:")
-    print("   [1] Широкий  — 5/95 перцентили, полная история обучения")
-    print("                  (академический: учитывает все кризисы, в т.ч. 2022)")
-    print("   [2] Узкий    — 25/75 перцентили, последние 3 года")
-    print("                  (практический: актуальная волатильность)")
-    ci_mode_input = input("   Режим CI (1/2, по умолчанию 1): ").strip()
+    print("   [1] Широкий — 5/95 перцентили, полная история (учитывает кризисы 2022)")
+    print("   [2] Узкий   — 25/75 перцентили, последние 3 года (актуальная волатильность)")
+    ci_mode_input = input("   Выбор [1/2, по умолчанию 1]: ").strip()
     ci_mode = 'narrow' if ci_mode_input == '2' else 'wide'
 
-    print("\n6. Презентационный режим (дополнительный график для слайдов)?")
-    print("   1 — Нет (по умолчанию)")
-    print("   2 — Да, построить упрощённый график для презентации")
-    choice = input("Ваш выбор [1/2, по умолчанию 1]: ").strip() or "1"
-    presentation_mode = (choice == "2")
+    # 6. Презентационный режим
+    print("\n6. Презентационный режим:")
+    pres_input = input("   Построить дополнительный упрощённый график для слайдов? (y/n, по умолчанию n): ").strip().lower()
+    presentation_mode = pres_input == 'y'
 
     if presentation_mode:
         raw = input("   Окно истории на графике, торговых дней [по умолчанию 90]: ").strip()
@@ -1653,9 +1650,9 @@ def get_user_inputs():
     print(f"  Режим: {'Бэктест' if backtest_mode else 'Прогноз'}")
     if backtest_mode:
         print(f"  Дата бэктеста: {backtest_date}")
-    print(f"  Оптимизация: {'Да (' + str(n_trials) + ' итераций)' if optimize else 'Нет (используются сохраненные/дефолтные)'}")
-    print(f"  Доверительные интервалы: {'Да' if show_ci else 'Нет'}")
+    print(f"  Оптимизация: {'Да (' + str(n_trials) + ' итераций)' if optimize else 'Нет (используются сохранённые/дефолтные)'}")
     print(f"  Показать график: {'Да' if show_plot else 'Нет'}")
+    print(f"  Доверительные интервалы: {'Да' if show_ci else 'Нет'}")
     ci_label = 'Узкий (25/75, последние 3 года)' if ci_mode == 'narrow' else 'Широкий (5/95, вся история)'
     print(f"  Режим CI: {ci_label}")
     print(f"  Презентационный режим: {'Да (окно ' + str(history_window) + ' дней)' if presentation_mode else 'Нет'}")
@@ -1793,6 +1790,8 @@ if __name__ == '__main__':
     if data is None or data.empty:
         print(f"Тикер '{ticker}' не найден на MOEX или данные не загружены.")
         exit(1)
+
+    ticker_name = get_ticker_shortname(ticker)
 
     logger.info("Loading fundamental data once for all horizons...")
     shared_funds = tinkoff_loader.get_fundamentals(ticker) if tinkoff_loader else {}
@@ -2038,7 +2037,7 @@ if __name__ == '__main__':
                 return "LOW"
 
             print("\n" + "="*72)
-            print(f"FORECAST SUMMARY: {ticker}")
+            print(f"FORECAST SUMMARY: {ticker}  —  {ticker_name}")
             print(f"Текущая цена: {last_close:.2f} RUB ({last_date})")
             print("="*72)
             for horizon in [1, 2, 3]:
@@ -2057,7 +2056,7 @@ if __name__ == '__main__':
             print("="*72)
 
             logger.info("\n" + "=" * 88)
-            logger.info(f"FORECAST SUMMARY: {ticker}  (ci_mode={ci_mode})")
+            logger.info(f"FORECAST SUMMARY: {ticker} — {ticker_name}  (ci_mode={ci_mode})")
             logger.info(f"Текущая цена: {last_close:.2f} RUB ({last_date})  |  Naive baseline = {last_close:.2f} для всех горизонтов")
             logger.info("=" * 88)
             logger.info("%-5s  %-12s  %9s  %7s  %5s  %5s  %6s  %s",
@@ -2114,7 +2113,7 @@ if __name__ == '__main__':
                 plt.fill_between(cum_forecast_dates, cum_lower, cum_upper, alpha=0.2, label='CI (1-3 days)')
 
             plt.title(
-                f'Stock Price Forecast for {ticker} (v15)',
+                f'Прогноз цены: {ticker} — {ticker_name}',
                 fontsize=14,
                 fontweight='bold'
             )
