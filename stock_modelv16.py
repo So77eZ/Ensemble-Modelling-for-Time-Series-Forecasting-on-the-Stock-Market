@@ -2025,38 +2025,61 @@ if __name__ == '__main__':
                 datetime.strptime(end_date, '%Y-%m-%d'), 3
             )
 
-            print("\n" + "="*60)
-            print("FORECAST SUMMARY")
-            print("="*60)
+            # Текущая известная цена — база для расчёта направления и Δ%
+            last_close = float(data_res['Close'].iloc[-1])
+            last_date  = data_res['Date'].iloc[-1].strftime('%d.%m.%Y')
+
+            def _confidence_label(r2_val):
+                """Качественная оценка уверенности по walk-forward R²."""
+                if r2_val >= 0.85:
+                    return "HIGH"
+                if r2_val >= 0.70:
+                    return "MED"
+                return "LOW"
+
+            print("\n" + "="*72)
+            print(f"FORECAST SUMMARY: {ticker}")
+            print(f"Текущая цена: {last_close:.2f} RUB ({last_date})")
+            print("="*72)
             for horizon in [1, 2, 3]:
-                price = forecasts[horizon][-1]
+                price    = forecasts[horizon][-1]
                 date_str = forecast_dates[horizon-1].strftime('%d.%m.%Y')
-                print(f"{horizon} day: {forecast_dates[horizon-1]} ~ Цена на {date_str}: {price:.2f}")
+                delta_pct = (price - last_close) / last_close * 100
+                if   delta_pct >  0.05: direction = "UP  "
+                elif delta_pct < -0.05: direction = "DOWN"
+                else:                   direction = "FLAT"
+                conf = _confidence_label(all_results[horizon][8])
+                print(f"+{horizon}d  {date_str}  {price:7.2f} RUB  {delta_pct:+5.2f}%  {direction}  [{conf}]")
                 if show_ci:
                     lower, upper = confidence_intervals[horizon][0][-1], confidence_intervals[horizon][1][-1]
-                    print(f"  Confidence Interval: [{lower:.2f}, {upper:.2f}]")
-            print("="*60)
+                    print(f"        CI: [{lower:.2f} - {upper:.2f}]  ширина {upper-lower:.2f}")
+            print(f"\nNaive baseline (без модели): {last_close:.2f} RUB для всех горизонтов")
+            print("="*72)
 
-            logger.info("\n" + "=" * 72)
+            logger.info("\n" + "=" * 88)
             logger.info(f"FORECAST SUMMARY: {ticker}  (ci_mode={ci_mode})")
-            logger.info("=" * 72)
-            logger.info("%-5s  %-12s  %-9s  %-7s  %-7s  %-6s  %s",
-                        "H", "Date", "Forecast", "RMSE", "MAE", "R²", "CI [lower – upper]  width")
-            logger.info("-" * 72)
+            logger.info(f"Текущая цена: {last_close:.2f} RUB ({last_date})  |  Naive baseline = {last_close:.2f} для всех горизонтов")
+            logger.info("=" * 88)
+            logger.info("%-5s  %-12s  %9s  %7s  %5s  %5s  %6s  %s",
+                        "H", "Date", "Forecast", "Δ%", "Dir", "Conf", "R²", "CI [lower – upper]  width")
+            logger.info("-" * 88)
             for h in [1, 2, 3]:
                 h_price  = forecasts[h][-1]
                 h_lower  = confidence_intervals[h][0][-1]
                 h_upper  = confidence_intervals[h][1][-1]
                 h_width  = h_upper - h_lower
-                h_rmse   = all_results[h][6]
-                h_mae    = all_results[h][7]
                 h_r2     = all_results[h][8]
                 h_date   = all_results[h][4][-1].strftime('%d.%m.%Y')
+                h_delta  = (h_price - last_close) / last_close * 100
+                if   h_delta >  0.05: h_dir = "UP"
+                elif h_delta < -0.05: h_dir = "DOWN"
+                else:                 h_dir = "FLAT"
+                h_conf   = _confidence_label(h_r2)
                 ci_ok    = "✓" if h_lower <= h_price <= h_upper else "✗"
-                logger.info("+%dd    %-12s  %7.2f    %6.2f  %6.2f  %.3f  [%6.2f – %6.2f]  %5.2f %s",
-                            h, h_date, h_price, h_rmse, h_mae, h_r2,
+                logger.info("+%dd    %-12s  %9.2f  %+6.2f%%  %5s  %5s  %.3f  [%6.2f – %6.2f]  %5.2f %s",
+                            h, h_date, h_price, h_delta, h_dir, h_conf, h_r2,
                             h_lower, h_upper, h_width, ci_ok)
-            logger.info("=" * 72)
+            logger.info("=" * 88)
 
             graphs_dir = os.path.join(MODEL_OUTPUT_DIR, 'graphs')
             logs_dir = os.path.join(MODEL_OUTPUT_DIR, 'logs')
