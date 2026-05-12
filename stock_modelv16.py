@@ -2038,7 +2038,7 @@ if __name__ == '__main__':
 
             print("\n" + "="*72)
             print(f"FORECAST SUMMARY: {ticker}  —  {ticker_name}")
-            print(f"Текущая цена: {last_close:.2f} RUB ({last_date})")
+            print(f"Текущая цена (база для Δ%): {last_close:.2f} RUB ({last_date})")
             print("="*72)
             for horizon in [1, 2, 3]:
                 price    = forecasts[horizon][-1]
@@ -2093,13 +2093,8 @@ if __name__ == '__main__':
                 color='blue',
                 linewidth=2
             )
-            # Предсказание для даты T+h строится по данным [i-30, i), последний наблюдаемый день = i-1.
-            # Чтобы зелёная линия совпадала с синей по фазе, смещаем на horizon+1 позицию влево:
-            # target - last_observed = (i + horizon) - (i - 1) = horizon + 1.
-            _h = 1 + 1  # horizon=1, +1 за то что окно заканчивается в i-1, а не i
-            _pred_dates = data_res['Date'].iloc[-(len(final_pred) + _h):-_h]
             plt.plot(
-                _pred_dates,
+                data_res['Date'].iloc[-len(final_pred):],
                 final_pred,
                 label='Predicted (test)',
                 color='green',
