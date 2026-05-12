@@ -2093,8 +2093,12 @@ if __name__ == '__main__':
                 color='blue',
                 linewidth=2
             )
+            # Предсказание для даты T+h строится по данным до T-1.
+            # Смещаем на horizon позиций влево, чтобы зелёная линия совпадала с синей по фазе.
+            _h = 1  # график строится по all_results[1] (horizon=1)
+            _pred_dates = data_res['Date'].iloc[-(len(final_pred) + _h):-_h]
             plt.plot(
-                data_res['Date'].iloc[-len(final_pred):],
+                _pred_dates,
                 final_pred,
                 label='Predicted (test)',
                 color='green',
