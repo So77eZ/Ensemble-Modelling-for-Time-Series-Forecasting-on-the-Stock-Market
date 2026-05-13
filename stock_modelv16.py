@@ -126,7 +126,7 @@ BENCHMARK_DATE        = '2024-10-14'
 BENCHMARK_CI_MODE     = 'wide'
 BENCHMARK_APPROX_TIME = '5–10 минут'
 BENCHMARK_START_DATE  = '2014-01-01'
-BENCHMARKS_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'benchmarks.md')
+BENCHMARKS_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'docs', 'benchmarks.md')
 
 # ============================================================================
 # HYPERPARAMETERS MANAGEMENT

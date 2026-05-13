@@ -8,22 +8,36 @@
 
 ## Структура репозитория
 
+### Код
+
 | Файл | Описание |
 | --- | --- |
-| `stock_modelv16.py` | **Текущая версия (production)**: основной скрипт — загрузка данных, расчёт индикаторов (включая 4 relative features), обучение ансамбля LSTM+XGBoost+Ridge с R² scoring для подбора Ridge alpha, прогнозирование |
-| `stock_modelv15.py` | **Legacy-версия**: предыдущая стабильная архитектура без relative features. Сохранена для воспроизведения исторических бенчмарков из `benchmarks.md` (~20 строк результатов v15.X) и для прямых A/B-сравнений архитектур при защите диплома |
-| `macro_loader.py` | Загрузка макроэкономических данных: USD/RUB (ЦБ РФ XML), ставка ЦБ (SOAP), Brent (MOEX ISS) |
-| `fundamentals_loader.py` | Дивидендные time-varying признаки через MOEX ISS (`div_days_to_next`, `div_next_amount`, `div_days_since_last`) |
+| `stock_modelv16.py` | **Текущая версия (production)**: основной скрипт — загрузка данных, расчёт индикаторов (включая 4 relative features), обучение ансамбля LSTM+XGBoost+Ridge с R² scoring для подбора Ridge alpha, прогнозирование, GARCH-CI, multi-date backtest |
+| `stock_modelv15.py` | **Legacy-версия**: предыдущая стабильная архитектура без relative features. Сохранена для воспроизведения исторических бенчмарков из [docs/benchmarks.md](docs/benchmarks.md) и для прямых A/B-сравнений архитектур при защите диплома |
+| `macro_loader.py` | Загрузка макроэкономических данных: USD/RUB (ЦБ РФ XML), ставка ЦБ (SOAP), Brent (MOEX ISS), IMOEX и RTSI (MOEX ISS candles) |
+| `fundamentals_loader.py` | Дивидендные time-varying признаки через MOEX ISS (`div_days_to_next`, `div_next_amount`, `div_days_since_last`) + `get_ticker_shortname` |
 | `config.py` | Гиперпараметры LSTM и XGBoost (безопасно версионировать) |
 | `presentation_output.py` | Презентационный график для слайдов защиты: 16:9, русские подписи, 90% CI, PNG 1920x1080 |
-| `tests/` | Юнит-тесты: `test_ci_mode.py`, `test_multihorizon.py`, `test_macro_loader.py` |
+| `tests/` | Юнит-тесты: `test_ci_mode.py`, `test_multihorizon.py`, `test_macro_loader.py`, `test_benchmark.py` |
+
+### Документация (`docs/`)
+
+| Файл | Описание |
+| --- | --- |
+| [docs/architecture.md](docs/architecture.md) | Подробное описание архитектуры проекта и потока данных |
+| [docs/improvements.md](docs/improvements.md) | Анализ плюсов/минусов решения и рекомендации по улучшению |
+| [docs/benchmarks.md](docs/benchmarks.md) | Воспроизводимые результаты бэктестов по версиям |
+| [docs/Q_AND_A.md](docs/Q_AND_A.md) | Q&A с архитектурными решениями и обоснованием выбора подходов (включая отвергнутые гипотезы) |
+| [docs/CHANGELOG.md](docs/CHANGELOG.md) | История версий и изменений |
+| [docs/literature_review.md](docs/literature_review.md) | Обзор современной литературы по нейросетевому прогнозу временных рядов |
+| `docs/superpowers/` | Внутренние артефакты Claude Code (планы, спецификации) — игнорируется в VCS |
+
+### Сервисные
+
+| Файл | Описание |
+| --- | --- |
 | `.env` | API-токены (не включается в VCS) |
 | `.gitignore` | Исключения VCS: секреты, артефакты обучения, кэш Python |
-| `CHANGELOG.md` | История версий и изменений |
-| `architecture.md` | Подробное описание архитектуры проекта и потока данных |
-| `improvements.md` | Анализ плюсов/минусов решения и рекомендации по улучшению |
-| `benchmarks.md` | Воспроизводимые результаты бэктестов по версиям |
-| `Q_AND_A.md` | Q&A с архитектурными решениями и обоснованием выбора подходов (включая отвергнутые гипотезы) |
 | `requirements.txt` | Зафиксированные версии всех зависимостей для воспроизводимости окружения |
 | `.vscode/settings.json` | Настройки VS Code: интерпретатор venv, подавление ложных предупреждений Pylance |
 
@@ -38,6 +52,12 @@ python stock_modelv16.py --ticker SBER --no-gui
 
 # Бэктест на заданную дату
 python stock_modelv16.py --ticker LKOH --backtest 2024-10-14 --ci-mode wide
+
+# Multi-date backtest на 12 исторических датах (статистически значимая оценка)
+python stock_modelv16.py --ticker SBER --multi-backtest 12 --ci-mode garch --no-gui
+
+# Адаптивные доверительные интервалы через GARCH(1,1)
+python stock_modelv16.py --ticker SBER --ci-mode garch --no-gui
 
 # Optuna-оптимизация (30 итераций)
 python stock_modelv16.py --ticker GAZP --optimize --trials 30 --no-gui
@@ -57,9 +77,10 @@ python stock_modelv16.py --ticker SBER --backtest 2026-05-05 --no-gui
 | --- | --- |
 | `--ticker` | Тикер акции (SBER, LKOH, GAZP, …); по умолчанию SBER |
 | `--backtest` | Дата бэктеста YYYY-MM-DD |
+| `--multi-backtest N` | Multi-date backtest на N исторических датах (первый торговый день каждого из последних N месяцев); агрегирует Direction Accuracy с Wilson 95% CI, IC, CI coverage |
 | `--optimize` | Запустить Optuna |
 | `--trials` | Число итераций Optuna (default: 20) |
-| `--ci-mode` | `wide` (5/95, полная история) / `narrow` (25/75, 3 года) |
+| `--ci-mode` | `wide` (5/95, полная история) / `narrow` (25/75, 3 года) / `garch` (GARCH(1,1) адаптивная ширина, 90% CI) |
 | `--benchmark` | Воспроизводимый бэктест без интерактивного ввода |
 | `--presentation` | Сохранить презентационный PNG 1920×1080 |
 | `--no-gui` | Headless-режим, графики только сохраняются |
@@ -81,16 +102,19 @@ python stock_modelv16.py --ticker SBER --backtest 2026-05-05 --no-gui
 - **OHLCV:** цены открытия, максимум, минимум, закрытия, объём торгов
 - **Технические индикаторы (17):** SMA(10), EMA(20), RSI(14), MACD + Signal + Histogram, Bollinger Bands (Middle/Upper/Lower/Width), ATR(14), Stochastic K/D, ADX(14), Momentum(10), PriceChange(1d, 5d)
 - **Волатильность и momentum доходностей (5):** Vol_Return(5/10/20) — скользящее стд доходностей; Return_MA(5/10) — скользящее среднее доходностей
+- **Относительные признаки (4, v16):** `Close_to_SMA10`, `Close_to_EMA20`, `BB_Position`, `Close_ZScore_20` — масштаб-инвариантные индикаторы режима цены
 - **Фундаментальные признаки (6):** рыночная капитализация, ROE, дивидендная доходность, P/E, P/B, бета-коэффициент
-- **Макропризнаки time-varying (0–3, v15):** `usd_rub_hist` — исторический курс USD/RUB (ЦБ РФ XML API); `cbr_rate` — ключевая ставка ЦБ РФ (SOAP); `brent_price` — цена Brent (MOEX ISS BRN). Включаются динамически: Granger pre-screening исключает признаки с p ≥ 0.05
+- **Макропризнаки time-varying (0–5, v15):** `usd_rub_hist` — исторический курс USD/RUB (ЦБ РФ XML API); `cbr_rate` — ключевая ставка ЦБ РФ (SOAP); `brent_price` — цена Brent (MOEX ISS BRN); `imoex` и `rtsi` — индексы MOEX. Включаются динамически: Granger pre-screening исключает признаки с p ≥ 0.05
+- **Дивидендные time-varying признаки (3, v15.9):** `div_days_to_next` (обратный отсчёт до следующего реестра, sentinel 999), `div_next_amount`, `div_days_since_last`; look-ahead bias исключён 45-дневным окном объявления
 - **Признаки сезонности (3, v15.2):** `day_of_week` (0=пн…4=пт), `month` (1–12), `quarter` (1–4); вычисляются из поля `Date` в `update_technical_indicators`
-- Итого: **36–39 признаков** (динамически, зависит от Granger-скрининга макропризнаков)
+- **LSTM получает только подмножество** (7 фич: OHLCV + Price_Change_1 + Vol_Return_10) — даёт LSTM уникальное «сырое временное» представление, не дублирующее feature engineering XGB
+- Итого: **до 43 признаков для XGB** (динамически, зависит от Granger-скрининга макропризнаков и дивидендных)
 
 ### 3. Нормализация
 
 - `MinMaxScaler` по всем признакам
 - Отдельный скейлер для целевой переменной `Close` (для обратного преобразования прогнозов)
-- Скользящее окно `LOOK_BACK=30` дней → тензор формы `(N, 30, 36–39)`
+- Скользящее окно `LOOK_BACK=30` дней → тензор формы `(N, 30, 43)` для XGB, `(N, 30, 7)` для LSTM
 
 ### 4. Оптимизация гиперпараметров (Optuna)
 
@@ -105,9 +129,10 @@ python stock_modelv16.py --ticker SBER --backtest 2026-05-05 --no-gui
   - **LSTM** (3 слоя, Dropout, EarlyStopping)
   - **XGBoost Regressor** (вход — сплющенный тензор LOOK_BACK × n_features)
   - **Meta-Learner (Ridge, v15.3)** — `Ridge(alpha=1.0)` объединяет предсказания LSTM и XGBoost; веса `coef_[0]`/`coef_[1]` выводятся в лог на каждом сплите
-- После цикла обучаются **2 квантильные XGBoost-модели CI** на OOS-остатках (actual − meta_pred) тестовых окон; перцентили зависят от режима CI:
-  - `wide` (по умолчанию) — 5/95 перцентили, полная история: учитывает кризисные периоды
-  - `narrow` — 25/75 перцентили, последние 3 года: отражает актуальную волатильность
+- После цикла строится **доверительный интервал** на OOS-остатках walk-forward — три режима:
+  - `wide` (по умолчанию) — квантильные XGBoost-модели на 5/95 перцентили, полная история: учитывает кризисные периоды
+  - `narrow` — квантильные XGBoost-модели на 25/75 перцентили, последние 3 года: отражает актуальную волатильность
+  - `garch` — **адаптивный CI на базе GARCH(1,1)** (v16): моделирует условную волатильность σ_t для каждого горизонта; CI = pred ± 1.645·σ_t (90% покрытие). Шире в кризисы, уже в спокойные периоды. Мотивация: Ljung-Box на `|residuals|` подтверждает ARCH-эффект — CI постоянной ширины не отражает кластеризацию волатильности
 - Метрики качества: RMSE, MAE, R²
 - **Тест Льюнга–Бокса** (`min(20, len//2)` лагов) на OOS-остатках — диагностика автокорреляции; при менее 2 лагах пропускается; результат в stdout и лог-файле
 - **Тест Грэнжера** на топ-15 признаках по XGBoost feature importance — формальное обоснование выбора фичей
@@ -118,13 +143,25 @@ python stock_modelv16.py --ticker SBER --backtest 2026-05-05 --no-gui
 - **Прямое многошаговое прогнозирование (MIMO)** — для каждого горизонта (1, 2, 3 дня) обучается независимый ансамбль с целевой переменной, сдвинутой на h дней вперёд
 - Итого: 3 горизонта × 18 моделей = 54 модели на один тикер; нет авторегрессивного накопления ошибки
 - Даты прогноза учитывают торговый календарь: выходные дни пропускаются
-- Доверительный интервал: CI = pred + residual_quantile (перцентили 5/95 или 25/75 в зависимости от `--ci-mode`)
+- Доверительный интервал: квантильный (wide/narrow) либо GARCH-σ (см. шаг 5)
 
 ### 7. Оценка качества (Бэктест)
 
 - Обучение на данных до указанной даты
 - Прогноз на 1–3 дня вперёд и сравнение с известными реальными ценами
 - Метрики: абсолютная ошибка (RUB), Error %, **Naïve baseline**, **R² на доходностях**, **IC (Spearman)**, CI Coverage, Direction Accuracy
+
+### 8. Multi-date backtest (v16)
+
+Одиночный бэктест даёт 3 точки (h=1, 2, 3) — Direction Accuracy на 3 наблюдениях статистически невалидна. **Multi-date backtest** (`--multi-backtest N`) автоматически прогоняет модель на N исторических датах (первый торговый день каждого из последних N полных месяцев), агрегируя метрики:
+
+- Direction Accuracy с **Wilson 95% CI** — точечная оценка + границы уверенности на N×3 наблюдениях
+- IC (Spearman) как непрерывная метрика на всей выборке наблюдений
+- avg |Error|% ± std, median, signed (bias)
+- CI coverage, % случаев когда модель бьёт Naive
+- Per-date таблица для аудита
+
+Результаты сохраняются в `outputs/stock_modelv16/multidate/{ticker}_multidate_{timestamp}.{json,txt}`. Macro/dividend данные загружаются один раз на весь диапазон — экономия времени.
 
 #### Почему стандартного R² недостаточно
 
@@ -163,8 +200,8 @@ python stock_modelv16.py --ticker SBER --backtest 2026-05-05 --no-gui
 ## Инструментарий
 
 - **Язык:** Python 3.12
-- **Библиотеки:** `torch` (PyTorch + CUDA 12.8 для LSTM на GPU), `xgboost` (GPU), `optuna`, `scikit-learn`, `statsmodels`, `pandas`, `numpy`, `matplotlib`, `moexalgo`, `requests`, `python-dotenv`
-- **GPU:** RTX 50 Blackwell (sm_120) поддерживается через `torch==2.11.0+cu128`. Установка: `pip install torch --index-url https://download.pytorch.org/whl/cu128`
+- **Библиотеки:** `torch` (PyTorch + CUDA 13.0 для LSTM на GPU), `xgboost` (GPU), `optuna`, `scikit-learn`, `statsmodels`, `arch` (GARCH-CI), `pandas`, `numpy`, `matplotlib`, `moexalgo`, `requests`, `python-dotenv`
+- **GPU:** RTX 50 Blackwell (sm_120) поддерживается через `torch==2.11.0+cu130`. Установка: `pip install torch --index-url https://download.pytorch.org/whl/cu130`
 - **Источники данных:** MOEX ISS API, T-Bank Invest API, ЦБ РФ XML API (USD/RUB), ЦБ РФ SOAP DailyInfo (ставка), MOEX ISS BRN фьючерс (Brent)
 - **Среда:** venv, VS Code
 
