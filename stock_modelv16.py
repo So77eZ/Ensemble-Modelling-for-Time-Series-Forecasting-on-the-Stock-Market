@@ -44,6 +44,13 @@ except ImportError:
     print("XGBoost not installed. Install with: pip install xgboost")
     XGBOOST_AVAILABLE = False
 
+try:
+    from arch import arch_model
+    _HAS_ARCH = True
+except ImportError:
+    arch_model = None
+    _HAS_ARCH = False
+
 # LSTM реализован на PyTorch (CUDA на Windows native, в отличие от TF 2.10+).
 # Сохранённые hyperparams (units/dropout/lr) совместимы с PyTorch-архитектурой.
 
@@ -254,6 +261,32 @@ def _get_ci_params(ci_mode: str, X_train: np.ndarray, y_train: np.ndarray):
         q_start = max(0, len(X_train) - NARROW_WINDOW)
         return X_train[q_start:], y_train[q_start:], 0.25, 0.75
     return X_train, y_train, 0.05, 0.95
+
+
+def _garch_sigma_h(residuals_rub: np.ndarray, horizon: int = 1) -> float:
+    """GARCH(1,1) на OOS-остатках в рублях. Возвращает σ-прогноз для горизонта.
+
+    Каждый h-горизонт обучает отдельный pipeline с residuals = actual[t+h] - pred[t+h];
+    GARCH моделирует σ²_t = ω + α·e²_{t-1} + β·σ²_{t-1} на этой серии и даёт
+    h-шаговый прогноз условной волатильности для следующего наблюдения.
+
+    Возвращает 0.0 если arch не установлен или fit упал — caller отвалится на wide.
+    """
+    if not _HAS_ARCH:
+        logger.warning("arch не установлен — GARCH-CI недоступен; pip install arch")
+        return 0.0
+    try:
+        am = arch_model(residuals_rub, vol='Garch', p=1, q=1,
+                        mean='Zero', dist='normal', rescale=False)
+        res = am.fit(disp='off', show_warning=False, options={'maxiter': 200})
+        f = res.forecast(horizon=max(1, horizon), reindex=False)
+        sigma = float(np.sqrt(f.variance.values[-1, max(0, horizon - 1)]))
+        if not np.isfinite(sigma) or sigma <= 0:
+            return 0.0
+        return sigma
+    except Exception as e:
+        logger.warning(f"GARCH(1,1) fit failed: {e}")
+        return 0.0
 
 
 def get_usd_rub_rate() -> float:
@@ -1215,17 +1248,35 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
             print(_msg)
             logger.info(_msg)
 
-    meta_q_oos, res_q, lower_alpha, upper_alpha = _get_ci_params(
-        ci_mode, oos_meta, oos_residuals_centered
-    )
-    best_lower_model, best_upper_model = _train_quantile_pair(
-        meta_features=meta_q_oos,
-        residuals=res_q,
-        lower_alpha=lower_alpha,
-        upper_alpha=upper_alpha,
-        base_params=ci_params,
-    )
-    logger.info("✓ CI quantile models trained")
+    garch_sigma_rub = 0.0
+    if ci_mode == 'garch':
+        # Переводим OOS-остатки из scaled-пространства в рубли:
+        # MinMaxScaler аффинный, поэтому разность scaled-значений умножается на data_range.
+        scale_range = float(close_scaler.data_max_[0] - close_scaler.data_min_[0])
+        residuals_rub = oos_residuals_centered * scale_range
+        garch_sigma_rub = _garch_sigma_h(residuals_rub, horizon=horizon)
+        if garch_sigma_rub > 0:
+            logger.info(
+                f"[OK] GARCH(1,1) σ_h={horizon} = {garch_sigma_rub:.4f} RUB "
+                f"(empirical std OOS = {float(np.std(residuals_rub)):.4f} RUB)"
+            )
+            best_lower_model = best_upper_model = None
+        else:
+            logger.warning("GARCH-CI не получен — fallback на wide-режим (5/95 квантили)")
+            ci_mode = 'wide'
+
+    if ci_mode != 'garch':
+        meta_q_oos, res_q, lower_alpha, upper_alpha = _get_ci_params(
+            ci_mode, oos_meta, oos_residuals_centered
+        )
+        best_lower_model, best_upper_model = _train_quantile_pair(
+            meta_features=meta_q_oos,
+            residuals=res_q,
+            lower_alpha=lower_alpha,
+            upper_alpha=upper_alpha,
+            base_params=ci_params,
+        )
+        logger.info("✓ CI quantile models trained")
 
     best_lstm_ensemble, best_xgb_model, best_meta_learner = models[-1]
 
@@ -1258,12 +1309,20 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     pred_close_scaled = best_meta_learner.predict(meta_input)[0]
     pred_close = close_scaler.inverse_transform([[pred_close_scaled]])[0][0]
 
-    lower_residual = best_lower_model.predict(meta_input)[0]
-    upper_residual = best_upper_model.predict(meta_input)[0]
-    lower = close_scaler.inverse_transform([[pred_close_scaled + lower_residual]])[0][0]
-    upper = close_scaler.inverse_transform([[pred_close_scaled + upper_residual]])[0][0]
-    if lower > upper:
-        lower, upper = upper, lower
+    if ci_mode == 'garch' and garch_sigma_rub > 0:
+        # 90% CI: pred ± 1.645·σ_t (двусторонний нормальный квантиль).
+        # GARCH(1,1) даёт условную σ, поэтому ширина CI адаптивная по волатильности.
+        z = 1.645
+        half = z * garch_sigma_rub
+        lower = pred_close - half
+        upper = pred_close + half
+    else:
+        lower_residual = best_lower_model.predict(meta_input)[0]
+        upper_residual = best_upper_model.predict(meta_input)[0]
+        lower = close_scaler.inverse_transform([[pred_close_scaled + lower_residual]])[0][0]
+        upper = close_scaler.inverse_transform([[pred_close_scaled + upper_residual]])[0][0]
+        if lower > upper:
+            lower, upper = upper, lower
 
     forecasts[horizon] = [pred_close]
     confidence_intervals[horizon] = ([lower], [upper])
@@ -1630,8 +1689,9 @@ def get_user_inputs():
     print("\n5. Режим доверительных интервалов:")
     print("   [1] Широкий — 5/95 перцентили, полная история (учитывает кризисы 2022)")
     print("   [2] Узкий   — 25/75 перцентили, последние 3 года (актуальная волатильность)")
-    ci_mode_input = input("   Выбор [1/2, по умолчанию 1]: ").strip()
-    ci_mode = 'narrow' if ci_mode_input == '2' else 'wide'
+    print("   [3] GARCH   — адаптивная ширина по GARCH(1,1) на OOS-остатках (90% CI)")
+    ci_mode_input = input("   Выбор [1/2/3, по умолчанию 1]: ").strip()
+    ci_mode = {'2': 'narrow', '3': 'garch'}.get(ci_mode_input, 'wide')
 
     # 6. Презентационный режим
     print("\n6. Презентационный режим:")
@@ -1653,7 +1713,10 @@ def get_user_inputs():
     print(f"  Оптимизация: {'Да (' + str(n_trials) + ' итераций)' if optimize else 'Нет (используются сохранённые/дефолтные)'}")
     print(f"  Показать график: {'Да' if show_plot else 'Нет'}")
     print(f"  Доверительные интервалы: {'Да' if show_ci else 'Нет'}")
-    ci_label = 'Узкий (25/75, последние 3 года)' if ci_mode == 'narrow' else 'Широкий (5/95, вся история)'
+    ci_label = {
+        'narrow': 'Узкий (25/75, последние 3 года)',
+        'garch':  'GARCH(1,1) — адаптивная ширина (90% CI)',
+    }.get(ci_mode, 'Широкий (5/95, вся история)')
     print(f"  Режим CI: {ci_label}")
     print(f"  Презентационный режим: {'Да (окно ' + str(history_window) + ' дней)' if presentation_mode else 'Нет'}")
     print("="*60)
@@ -1690,15 +1753,21 @@ if __name__ == '__main__':
     parser.add_argument('--backtest', type=str, default=None, help='Backtest date (YYYY-MM-DD)')
     parser.add_argument('--optimize', action='store_true', help='Run Optuna optimization')
     parser.add_argument('--trials', type=int, default=20, help='Optuna trials')
-    parser.add_argument('--ci-mode', choices=['wide', 'narrow'], default='wide',
-                        help='CI mode: wide=5/95 full history, narrow=25/75 last 3y')
+    parser.add_argument('--ci-mode', choices=['wide', 'narrow', 'garch'], default='wide',
+                        help='CI mode: wide=5/95 full history, narrow=25/75 last 3y, garch=GARCH(1,1) adaptive')
     parser.add_argument('--presentation', action='store_true',
                         help='Построить дополнительный график в презентационном стиле')
     parser.add_argument('--history-window', type=int, default=90,
                         help='Окно истории для презентационного графика, торговых дней (по умолчанию 90)')
     parser.add_argument('--benchmark', action='store_true',
                         help=f'Запустить воспроизводимый бенчмарк ({BENCHMARK_TICKER}, дефолтные параметры)')
+    parser.add_argument('--multi-backtest', type=int, default=None, metavar='N',
+                        help='Multi-date backtest на N исторических датах (первый торговый день каждого из последних N месяцев). '
+                             'Сохраняет агрегированный отчёт с Direction Accuracy + Wilson CI, IC, CI coverage.')
     args = parser.parse_args()
+
+    if args.multi_backtest and not args.ticker:
+        parser.error("--multi-backtest требует --ticker (укажите тикер для прогона)")
 
     if args.no_gui or args.benchmark:
         try:
