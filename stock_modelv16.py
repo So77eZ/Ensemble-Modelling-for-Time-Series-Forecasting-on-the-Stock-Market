@@ -1184,7 +1184,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     # CI-модели обучаются на OOS-остатках всех walk-forward сплитов.
     # OOS-остатки (actual − pred на тестовых окнах) честно отражают погрешность
     # модели на невиданных данных, в отличие от in-sample остатков.
-    logger.info("Training CI quantile models on OOS residuals...")
+    logger.info(f"Building CI ({ci_mode}) from OOS residuals...")
     oos_meta = np.vstack(oos_meta_list)
     oos_residuals = np.concatenate(oos_residuals_list)
 
@@ -1509,6 +1509,287 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
     
     return backtest_results, forecasts, forecast_dates, confidence_intervals, all_results
 
+
+# ============================================================================
+# MULTI-DATE BACKTEST
+# ============================================================================
+
+def _wilson_ci(k: int, n: int, z: float = 1.96) -> tuple:
+    """Wilson 95% CI для биномиальной пропорции k/n. z=1.96 ≈ 95% покрытие."""
+    if n == 0:
+        return (0.0, 0.0)
+    p = k / n
+    denom = 1.0 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
+    return (max(0.0, center - half), min(1.0, center + half))
+
+
+def _select_backtest_dates(data: pd.DataFrame, n_dates: int,
+                            min_history_days: int = 365,
+                            min_future_trading: int = 5) -> list:
+    """Первый торговый день каждого из последних n_dates полных месяцев.
+
+    Требования:
+    - >= min_history_days календарных дней истории до даты
+    - >= min_future_trading торговых дней после неё (нужно для h=3 + запас)
+    """
+    dates = pd.to_datetime(data['Date']).sort_values().reset_index(drop=True)
+    if dates.empty:
+        return []
+    last_date = dates.iloc[-1]
+    first_date = dates.iloc[0]
+
+    selected = []
+    # Стартуем с предыдущего полного месяца (текущий неполон).
+    anchor = (last_date - pd.DateOffset(months=1)).replace(day=1)
+
+    while len(selected) < n_dates:
+        if anchor < first_date:
+            break
+        month_dates = dates[(dates >= anchor) &
+                             (dates < anchor + pd.DateOffset(months=1))]
+        if not month_dates.empty:
+            candidate = month_dates.iloc[0]
+            future_count = (dates > candidate).sum()
+            history_days = (candidate - first_date).days
+            if future_count >= min_future_trading and history_days >= min_history_days:
+                selected.append(candidate.strftime('%Y-%m-%d'))
+        anchor = anchor - pd.DateOffset(months=1)
+
+    return sorted(selected)
+
+
+def _aggregate_multidate(per_date_results: list) -> dict:
+    """Сводные метрики по горизонтам через все даты."""
+    agg = {}
+    for h in [1, 2, 3]:
+        observations = []
+        for entry in per_date_results:
+            for r in entry['horizons']:
+                if r['horizon'] == h:
+                    observations.append(r)
+                    break
+
+        if not observations:
+            agg[h] = None
+            continue
+
+        n = len(observations)
+        errors_pct = np.array([o['error_pct'] for o in observations])
+        signed_errors = np.array([
+            (o['forecast'] - o['real']) / o['real'] * 100.0 for o in observations
+        ])
+        dir_ok    = sum(1 for o in observations if o['dir_correct'])
+        in_ci_ok  = sum(1 for o in observations if o['in_ci'])
+        beats_nv  = sum(1 for o in observations if o['error'] < o['naive_error'])
+        naive_pct = np.array([o['naive_error_pct'] for o in observations])
+
+        model_returns = [o['model_return_pct'] for o in observations]
+        real_returns  = [o['real_return_pct']  for o in observations]
+        # IC требует вариативности по обеим сериям
+        try:
+            ic = float(pd.Series(model_returns).corr(pd.Series(real_returns), method='spearman'))
+            if not np.isfinite(ic):
+                ic = 0.0
+        except Exception:
+            ic = 0.0
+
+        agg[h] = {
+            'n_observations':           n,
+            'mean_abs_error_pct':       float(np.mean(errors_pct)),
+            'std_abs_error_pct':        float(np.std(errors_pct)),
+            'median_abs_error_pct':     float(np.median(errors_pct)),
+            'mean_signed_error_pct':    float(np.mean(signed_errors)),
+            'direction_correct':        dir_ok,
+            'direction_accuracy':       dir_ok / n,
+            'direction_wilson_95':      _wilson_ci(dir_ok, n),
+            'ci_coverage':              in_ci_ok / n,
+            'beats_naive':              beats_nv / n,
+            'mean_naive_error_pct':     float(np.mean(naive_pct)),
+            'ic_spearman':              ic,
+        }
+    return agg
+
+
+def run_multi_date_backtest(
+    data: pd.DataFrame,
+    ticker: str,
+    n_dates: int,
+    best_lstm_params: dict,
+    best_xgb_params: dict,
+    ci_mode: str = 'wide',
+) -> dict:
+    """Прогоняет run_backtest на N исторических датах для статистически значимой оценки.
+
+    Returns dict с per-date результатами и агрегированными метриками.
+    """
+    backtest_dates = _select_backtest_dates(data, n_dates)
+    if not backtest_dates:
+        logger.error("Не найдено дат с достаточной историей/будущим для multi-date backtest")
+        return None
+
+    logger.info("\n" + "=" * 72)
+    logger.info(f"MULTI-DATE BACKTEST: {ticker} | {len(backtest_dates)} дат | ci_mode={ci_mode}")
+    logger.info(f"Диапазон: {backtest_dates[0]} ... {backtest_dates[-1]}")
+    logger.info("=" * 72)
+
+    # Shared макро/дивиденды загружаем один раз на весь диапазон данных.
+    macro_start = data['Date'].min().strftime('%Y-%m-%d')
+    macro_end   = data['Date'].max().strftime('%Y-%m-%d')
+    logger.info("Загрузка макро-данных на полный диапазон...")
+    shared_macro = load_macro_data(macro_start, macro_end)
+    logger.info(f"Загрузка дивидендных признаков для {ticker}...")
+    shared_div = load_dividend_features(ticker, macro_start, macro_end)
+
+    per_date_results = []
+    for i, bdate in enumerate(backtest_dates, 1):
+        logger.info("\n" + "-" * 72)
+        logger.info(f"[{i}/{len(backtest_dates)}] Бэктест на {bdate}")
+        logger.info("-" * 72)
+        try:
+            result = run_backtest(
+                data, ticker, bdate,
+                best_lstm_params, best_xgb_params,
+                ci_mode=ci_mode,
+                macro_data=shared_macro,
+                div_data=shared_div,
+            )
+        except Exception as e:
+            logger.error(f"Бэктест упал на {bdate}: {e}")
+            continue
+        if result is None:
+            logger.warning(f"Бэктест на {bdate} вернул None — пропускаем")
+            continue
+        bt_results = result[0]
+        # Сериализуемая копия (даты в строки)
+        serial = []
+        for r in bt_results:
+            sr = dict(r)
+            sr['forecast_date'] = sr['forecast_date'].strftime('%Y-%m-%d')
+            sr['actual_date']   = sr['actual_date'].strftime('%Y-%m-%d')
+            serial.append(sr)
+        per_date_results.append({'date': bdate, 'horizons': serial})
+
+    if not per_date_results:
+        logger.error("Multi-date backtest: ни одной даты не дало результата")
+        return None
+
+    aggregated = _aggregate_multidate(per_date_results)
+    return {
+        'ticker':     ticker,
+        'ci_mode':    ci_mode,
+        'n_dates':    len(per_date_results),
+        'date_range': [backtest_dates[0], backtest_dates[-1]],
+        'per_date':   per_date_results,
+        'aggregated': aggregated,
+    }
+
+
+def _ic_interpretation(ic: float) -> str:
+    """Стандартная интерпретация IC для финансовой эконометрики."""
+    abs_ic = abs(ic)
+    if abs_ic >= 0.10:
+        return "сильный сигнал"
+    if abs_ic >= 0.05:
+        return "значимый"
+    if abs_ic >= 0.02:
+        return "слабый"
+    return "шум"
+
+
+def _format_multidate_report(result: dict, ticker_name: str = "") -> str:
+    """Текстовый отчёт multi-date backtest для человека."""
+    out = []
+    sep = "=" * 88
+    out.append(sep)
+    title = f"MULTI-DATE BACKTEST: {result['ticker']}"
+    if ticker_name and ticker_name != result['ticker']:
+        title += f"  —  {ticker_name}"
+    out.append(title)
+    out.append(sep)
+    out.append(f"CI mode:        {result['ci_mode']}")
+    out.append(f"Дат прогнано:   {result['n_dates']}")
+    out.append(f"Диапазон:       {result['date_range'][0]} ... {result['date_range'][1]}")
+    out.append("")
+
+    # PER-DATE таблица
+    out.append("PER-DATE RESULTS  (Dir=направление верно, CI=реал в интервале):")
+    out.append("")
+    header = "Date        |  h=1 Err%  Dir CI |  h=2 Err%  Dir CI |  h=3 Err%  Dir CI"
+    out.append(header)
+    out.append("-" * len(header))
+    for entry in result['per_date']:
+        row = f"{entry['date']}  |"
+        by_h = {r['horizon']: r for r in entry['horizons']}
+        for h in [1, 2, 3]:
+            r = by_h.get(h)
+            if r:
+                err = f"{r['error_pct']:6.2f}%"
+                d = 'Y' if r['dir_correct'] else 'N'
+                c = 'Y' if r['in_ci'] else 'N'
+                row += f"   {err}    {d}  {c}  |"
+            else:
+                row += "      —      —  —  |"
+        out.append(row.rstrip(' |'))
+    out.append("")
+    out.append(sep)
+
+    # AGGREGATED по горизонтам
+    out.append("AGGREGATED METRICS:")
+    out.append("")
+    for h in [1, 2, 3]:
+        a = result['aggregated'].get(h)
+        if a is None:
+            out.append(f"Horizon {h}d: no data")
+            continue
+        out.append(f"Horizon +{h}d  (n={a['n_observations']}):")
+        out.append(f"  Mean |Error|%:        {a['mean_abs_error_pct']:.2f} ± {a['std_abs_error_pct']:.2f}  "
+                   f"(median {a['median_abs_error_pct']:.2f})")
+        out.append(f"  Mean Signed Error%:   {a['mean_signed_error_pct']:+.2f}  (bias)")
+        wl, wu = a['direction_wilson_95']
+        out.append(f"  Direction Accuracy:   {a['direction_correct']}/{a['n_observations']} "
+                   f"= {a['direction_accuracy']*100:.1f}%  [95% Wilson: {wl*100:.1f}% – {wu*100:.1f}%]")
+        out.append(f"  CI Coverage:          {a['ci_coverage']*100:.1f}%")
+        out.append(f"  Model beats Naive:    {a['beats_naive']*100:.1f}%  "
+                   f"(mean Naive Error%: {a['mean_naive_error_pct']:.2f})")
+        out.append(f"  IC (Spearman):        {a['ic_spearman']:+.3f}  [{_ic_interpretation(a['ic_spearman'])}]")
+        out.append("")
+    out.append(sep)
+    return "\n".join(out)
+
+
+def _save_multidate_results(result: dict, output_root: str, ticker_name: str = "") -> tuple:
+    """Сохраняет JSON и TXT отчёт. Возвращает (json_path, txt_path)."""
+    import json
+    out_dir = os.path.join(output_root, 'multidate')
+    os.makedirs(out_dir, exist_ok=True)
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    json_path = os.path.join(out_dir, f"{result['ticker']}_multidate_{ts}.json")
+    txt_path  = os.path.join(out_dir, f"{result['ticker']}_multidate_{ts}.txt")
+
+    # JSON: всё кроме внутренних tuple/datetime
+    serializable = {
+        **result,
+        'aggregated': {
+            str(h): ({**v, 'direction_wilson_95': list(v['direction_wilson_95'])}
+                     if v else None)
+            for h, v in result['aggregated'].items()
+        },
+        'ticker_name': ticker_name,
+        'generated_at': datetime.now().isoformat(),
+    }
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(serializable, f, ensure_ascii=False, indent=2, default=str)
+
+    report = _format_multidate_report(result, ticker_name)
+    with open(txt_path, 'w', encoding='utf-8') as f:
+        f.write(report)
+
+    return json_path, txt_path
+
+
 # ============================================================================
 # BENCHMARK RUNNER
 # ============================================================================
@@ -1793,6 +2074,8 @@ if __name__ == '__main__':
             'ci_mode': args.ci_mode,
             'presentation_mode': args.presentation,
             'history_window': args.history_window,
+            'multi_backtest': bool(args.multi_backtest),
+            'n_dates': args.multi_backtest or 0,
         }
     else:
         # Interactive mode
@@ -1966,6 +2249,24 @@ if __name__ == '__main__':
         else:
             best_lstm_params, best_xgb_params = get_default_hyperparams()
             logger.info("Using default hyperparameters")
+
+    # Multi-date backtest: специальный CLI-режим, выходит после прогона.
+    if user_params.get('multi_backtest'):
+        n_dates = int(user_params.get('n_dates') or 12)
+        mdb_result = run_multi_date_backtest(
+            data, ticker, n_dates,
+            best_lstm_params, best_xgb_params,
+            ci_mode=ci_mode,
+        )
+        if mdb_result is None:
+            print("Multi-date backtest не дал результата.")
+            exit(1)
+        json_path, txt_path = _save_multidate_results(mdb_result, MODEL_OUTPUT_DIR, ticker_name)
+        report = _format_multidate_report(mdb_result, ticker_name)
+        print("\n" + report)
+        print(f"\nОтчёт:  {txt_path}")
+        print(f"JSON:   {json_path}")
+        exit(0)
 
     # Основной запуск модели
     if backtest_mode:
@@ -2154,43 +2455,53 @@ if __name__ == '__main__':
             os.makedirs(graphs_dir, exist_ok=True)
             os.makedirs(logs_dir, exist_ok=True)
 
-            plt.figure(figsize=(16, 8))
-            plt.plot(
-                data_res['Date'],
-                data_res['Close'],
-                label='Real Prices',
-                color='blue',
-                linewidth=2
-            )
-            plt.plot(
-                data_res['Date'].iloc[-len(final_pred):],
-                final_pred,
-                label='Predicted (test)',
-                color='green',
-                linestyle='--',
-                linewidth=2
-            )
-
             cum_forecast_dates = forecast_dates[:3]
             cum_forecast_prices = [forecasts[h][-1] for h in [1, 2, 3]]
-            plt.plot(cum_forecast_dates, cum_forecast_prices, label='Forecast (1-3 days)',
+
+            # Целочисленная ось X: каждый торговый день + прогноз — соседние точки.
+            # Устраняет пробелы из-за выходных/праздников между концом истории и прогнозом.
+            hist_dates = list(data_res['Date'])
+            all_dates = hist_dates + list(cum_forecast_dates)
+            n_hist = len(hist_dates)
+            n_pred = len(final_pred)
+            idx_hist = list(range(n_hist))
+            idx_pred = list(range(n_hist - n_pred, n_hist))
+            idx_fcst = list(range(n_hist, n_hist + 3))
+
+            # Адаптивная плотность меток: ближе к концу истории — чаще, дальше — реже.
+            # Шаг растёт геометрически (×1.35) — ≈неделя у края, ≈месяц-два в глубине.
+            tick_positions = list(idx_fcst)
+            _i = idx_fcst[0] - 5
+            _step = 5
+            while _i >= 0:
+                tick_positions.append(_i)
+                _step = max(_step + 1, int(_step * 1.35))
+                _i -= _step
+            tick_positions.sort()
+            tick_labels = [all_dates[i].strftime('%d.%m.%y') for i in tick_positions]
+
+            plt.figure(figsize=(16, 8))
+            plt.plot(idx_hist, data_res['Close'], label='Реальная цена', color='blue', linewidth=2)
+            plt.plot(idx_pred, final_pred, label='Предсказано (тест)', color='green',
+                     linestyle='--', linewidth=2)
+            plt.plot(idx_fcst, cum_forecast_prices, label='Прогноз (1–3 дня)',
                      linestyle='-.', linewidth=2, marker='o', color='red')
 
             if show_ci:
                 cum_lower = [confidence_intervals[h][0][-1] for h in [1, 2, 3]]
                 cum_upper = [confidence_intervals[h][1][-1] for h in [1, 2, 3]]
-                plt.fill_between(cum_forecast_dates, cum_lower, cum_upper, alpha=0.2, label='CI (1-3 days)')
+                plt.fill_between(idx_fcst, cum_lower, cum_upper, alpha=0.2, label='ДИ (1–3 дня)')
 
             plt.title(
                 f'Прогноз цены: {ticker} — {ticker_name}',
                 fontsize=14,
                 fontweight='bold'
             )
-            plt.xlabel('Date', fontsize=12)
-            plt.ylabel('Price (RUB)', fontsize=12)
+            plt.xlabel('Дата', fontsize=12)
+            plt.ylabel('Цена закрытия, ₽', fontsize=12)
             plt.legend(fontsize=10)
             plt.grid(True, alpha=0.3)
-            plt.xticks(rotation=45)
+            plt.xticks(tick_positions, tick_labels, rotation=45)
             plt.tight_layout()
 
             timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")

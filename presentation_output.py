@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Sequence
 
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 import numpy as np
 import pandas as pd
 
@@ -98,36 +97,60 @@ def plot_presentation(
         Полный путь к сохранённому PNG-файлу.
     """
     # ---- Подготовка данных ------------------------------------------------
-    history_dates = pd.to_datetime(pd.Series(history_dates))
+    history_dates = list(pd.to_datetime(pd.Series(history_dates)))
     history_prices = np.asarray(history_prices, dtype=float)
-    forecast_dates = pd.to_datetime(pd.Series(forecast_dates))
+    forecast_dates = list(pd.to_datetime(pd.Series(forecast_dates)))
     forecast_values = np.asarray(forecast_values, dtype=float)
     ci_lower = np.asarray(ci_lower, dtype=float)
     ci_upper = np.asarray(ci_upper, dtype=float)
 
     if history_window < len(history_dates):
-        history_dates = history_dates.iloc[-history_window:].reset_index(drop=True)
+        history_dates = history_dates[-history_window:]
         history_prices = history_prices[-history_window:]
+
+    # Целочисленная ось X: каждый торговый день + прогноз — соседние точки.
+    # Устраняет пробелы из-за выходных/праздников между концом истории и прогнозом.
+    all_dates = history_dates + forecast_dates
+    n_hist = len(history_dates)
+    n_fcst = len(forecast_dates)
+    idx_hist = list(range(n_hist))
+    idx_bridge = [n_hist - 1, n_hist]          # последний реальный → первый прогнозный
+    idx_fcst = list(range(n_hist, n_hist + n_fcst))
+
+    # Адаптивная плотность меток: ближе к концу истории — чаще, дальше — реже.
+    # Шаг растёт геометрически — на типичном окне 90 дней получается ~6-7 меток.
+    tick_positions = list(idx_fcst)
+    _i = idx_fcst[0] - 5
+    _step = 5
+    while _i >= 0:
+        tick_positions.append(_i)
+        _step = max(_step + 1, int(_step * 1.45))
+        _i -= _step
+    tick_positions.sort()
+
+    _RU_MONTHS = {
+        1: 'янв', 2: 'фев', 3: 'мар', 4: 'апр', 5: 'май', 6: 'июн',
+        7: 'июл', 8: 'авг', 9: 'сен', 10: 'окт', 11: 'ноя', 12: 'дек',
+    }
+    tick_labels = [
+        f'{all_dates[i].day:02d} {_RU_MONTHS[all_dates[i].month]} {all_dates[i].year}'
+        for i in tick_positions
+    ]
 
     # ---- Построение фигуры ------------------------------------------------
     fig, ax = plt.subplots(figsize=_FIG_SIZE, dpi=_DPI)
 
     # Фактическая цена
     ax.plot(
-        history_dates, history_prices,
+        idx_hist, history_prices,
         color=_COLOR_REAL,
         linewidth=_LINE_WIDTH_REAL,
         label='Реальная цена',
     )
 
     # Соединительная линия от последней реальной точки к прогнозу
-    last_real_date = history_dates.iloc[-1]
-    last_real_price = history_prices[-1]
-
-    bridge_dates = [last_real_date, forecast_dates.iloc[0]]
-    bridge_prices = [last_real_price, forecast_values[0]]
     ax.plot(
-        bridge_dates, bridge_prices,
+        idx_bridge, [history_prices[-1], forecast_values[0]],
         color=_COLOR_FORECAST,
         linewidth=_LINE_WIDTH_FORECAST,
         linestyle='--',
@@ -136,7 +159,7 @@ def plot_presentation(
 
     # Прогноз 1-3 дня
     ax.plot(
-        forecast_dates, forecast_values,
+        idx_fcst, forecast_values,
         color=_COLOR_FORECAST,
         linewidth=_LINE_WIDTH_FORECAST,
         marker='o',
@@ -148,7 +171,7 @@ def plot_presentation(
 
     # Заливка доверительного интервала
     ax.fill_between(
-        forecast_dates, ci_lower, ci_upper,
+        idx_fcst, ci_lower, ci_upper,
         color=_COLOR_CI_FILL,
         alpha=_CI_ALPHA,
         linewidth=0,
@@ -165,22 +188,8 @@ def plot_presentation(
     ax.set_xlabel('Дата', fontsize=_LABEL_FONT_SIZE, labelpad=10)
     ax.set_ylabel('Цена закрытия, ₽', fontsize=_LABEL_FONT_SIZE, labelpad=10)
 
-    # Формат дат на оси X — русские месяцы через явный словарь.
-    # Системная локаль ru_RU есть не везде, поэтому форматируем сами.
-    _RU_MONTHS = {
-        1: 'янв', 2: 'фев', 3: 'мар', 4: 'апр', 5: 'май', 6: 'июн',
-        7: 'июл', 8: 'авг', 9: 'сен', 10: 'окт', 11: 'ноя', 12: 'дек',
-    }
-
-    def _ru_date_fmt(x, pos=None):
-        d = mdates.num2date(x)
-        return f'{d.day:02d} {_RU_MONTHS[d.month]} {d.year}'
-
-    locator = mdates.AutoDateLocator(minticks=5, maxticks=8)
-    ax.xaxis.set_major_locator(locator)
-    ax.xaxis.set_major_formatter(plt.FuncFormatter(_ru_date_fmt))
-    fig = ax.figure
-    fig.autofmt_xdate(rotation=0, ha='center')
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels, rotation=0, ha='center')
 
     ax.tick_params(axis='both', labelsize=_TICK_FONT_SIZE)
     ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.4)
