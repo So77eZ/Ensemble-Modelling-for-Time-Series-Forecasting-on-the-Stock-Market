@@ -668,14 +668,40 @@ def update_technical_indicators(data):
     data['Stoch_K'], data['Stoch_D'] = calculate_stochastic(data)
     data['ADX_14'] = calculate_adx(data, 14)
     data['Momentum_10'] = calculate_momentum(data, 10)
-    data['Price_Change_1'] = calculate_price_change(data, 1)
-    data['Price_Change_5'] = calculate_price_change(data, 5)
+    data['Price_Change_1']  = calculate_price_change(data, 1)
+    data['Price_Change_5']  = calculate_price_change(data, 5)
+    data['Price_Change_10'] = calculate_price_change(data, 10)
+    data['Price_Change_20'] = calculate_price_change(data, 20)
     returns = data['Close'].pct_change()
     data['Vol_Return_5'] = returns.rolling(5).std()
     data['Vol_Return_10'] = returns.rolling(10).std()
     data['Vol_Return_20'] = returns.rolling(20).std()
     data['Return_MA_5'] = returns.rolling(5).mean()
     data['Return_MA_10'] = returns.rolling(10).mean()
+
+    # Momentum/trend-фичи (v16-experiments): противовес mean-reversion индикаторам
+    # (SMA/EMA/BB/ZScore). На бычьем тренде 2025-2026 модель систематически
+    # недооценивала цены — multi-date backtest 14.05.2026 показал negative bias
+    # -0.27%/-0.57%/-0.96% по горизонтам и beats Naive 33-50%.
+    closes = data['Close']
+
+    # Trend_Slope_20: slope линейной регрессии последних 20 closes, нормированный
+    # по среднему окна (scale-invariant). Положительный = восходящий тренд.
+    def _norm_slope(window):
+        arr = np.asarray(window, dtype=float)
+        if len(arr) < 2 or np.isnan(arr).any():
+            return np.nan
+        x = np.arange(len(arr))
+        slope = np.polyfit(x, arr, 1)[0]
+        m = arr.mean()
+        return slope / m if m != 0 else 0.0
+    data['Trend_Slope_20'] = closes.rolling(20).apply(_norm_slope, raw=True)
+
+    # Dist_to_High_20: (Close - max(Close, 20)) / max(Close, 20). Всегда <= 0.
+    # Близко к 0 => цена на локальном максимуме (трендовая фаза); далеко
+    # отрицательное => коррекция от максимума.
+    rolling_high_20 = closes.rolling(20).max().replace(0, np.nan)
+    data['Dist_to_High_20'] = (closes - rolling_high_20) / rolling_high_20
     data['day_of_week'] = data['Date'].dt.dayofweek   # 0=пн … 4=пт
     data['month']       = data['Date'].dt.month        # 1–12
     data['quarter']     = data['Date'].dt.quarter      # 1–4
@@ -919,7 +945,9 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         'SMA_10', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Histogram',
         'BB_Middle', 'BB_Upper', 'BB_Lower', 'BB_Width',
         'ATR_14', 'Stoch_K', 'Stoch_D', 'ADX_14', 'Momentum_10',
-        'Price_Change_1', 'Price_Change_5',
+        'Price_Change_1', 'Price_Change_5', 'Price_Change_10', 'Price_Change_20',
+        # --- Momentum/trend (v16-experiments): противовес mean-reversion ---
+        'Trend_Slope_20', 'Dist_to_High_20',
         # --- Скользящая волатильность и momentum доходностей ---
         'Vol_Return_5', 'Vol_Return_10', 'Vol_Return_20',
         'Return_MA_5', 'Return_MA_10',
@@ -2186,7 +2214,9 @@ if __name__ == '__main__':
             'SMA_10', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal', 'MACD_Histogram',
             'BB_Middle', 'BB_Upper', 'BB_Lower', 'BB_Width',
             'ATR_14', 'Stoch_K', 'Stoch_D', 'ADX_14', 'Momentum_10',
-            'Price_Change_1', 'Price_Change_5',
+            'Price_Change_1', 'Price_Change_5', 'Price_Change_10', 'Price_Change_20',
+        # --- Momentum/trend (v16-experiments): противовес mean-reversion ---
+        'Trend_Slope_20', 'Dist_to_High_20',
             # --- Сезонность ---
             'day_of_week', 'month', 'quarter',
             # --- Относительные признаки (v16) ---
