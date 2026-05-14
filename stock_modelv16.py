@@ -1,7 +1,17 @@
 import os
+import sys
 
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+# Windows-консоль по умолчанию использует cp1251 — print() с Unicode-символами
+# (Δ, ▲, ▼, —, ₽ и т.п.) падает с UnicodeEncodeError. Перенастраиваем stdout/stderr
+# на UTF-8 на старте, чтобы скрипт работал одинаково в любой консоли.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8')
+    except (AttributeError, OSError):
+        pass
 
 from dotenv import load_dotenv
 load_dotenv()
