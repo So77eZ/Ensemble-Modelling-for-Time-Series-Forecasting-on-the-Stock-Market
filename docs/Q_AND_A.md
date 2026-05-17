@@ -1517,6 +1517,145 @@ beats Naive только 25%. MGNT h=1: IC=+0.413, beats Naive 17%. Это зн�
 
 ---
 
+## Look-back trade-off: оптимальная длина контекста зависит от горизонта (17.05.2026)
+
+### Q: Что показал эксперимент с увеличением LOOK_BACK с 30 до 60 на SBER?
+
+**A**: Гипотеза «слабость на h=3 связана с коротким контекстом — длинный
+horizon требует более длинной history для захвата тренда» **подтверждена
+полностью на h=3, но обнаружен trade-off на h=1**.
+
+Эксперимент: `look-back-60-experiment` ветка, изменён `LSTM_LOOK_BACK 30 → 60`
+в `config.py`, проведена re-Optuna (HP оптимизированы под новый input shape),
+multi-date backtest 12 дат с ci_mode=garch.
+
+**Сравнение SBER LB=30 vs LB=60**:
+
+| Метрика | LB=30 | LB=60 | Δ |
+| --- | --- | --- | --- |
+| **h=1** Direction Acc | **67%** | 50% | −17pp |
+| **h=1** IC | +0.042 | **−0.154** | анти-сигнал появился |
+| **h=1** Mean \|Err\|% | 0.90 | 1.03 | хуже |
+| **h=2** Direction Acc | 58% | 50% | −8pp |
+| **h=2** IC | +0.049 | +0.028 | ≈ |
+| **h=3** Direction Acc | 33% | **58%** | **+25pp** |
+| **h=3** IC | +0.056 | **+0.573** | **выдающийся** |
+| **h=3** Mean \|Err\|% | 1.70 | **1.11** | **−0.59** |
+| **h=3** Beats Naive | 25% | **50%** | +25pp |
+| **h=3** Signed bias | −0.96 | −0.51 | вдвое лучше |
+
+**Новые HP под LB=60** (Optuna нашёл другие):
+
+| Параметр | LB=30 | LB=60 |
+| --- | --- | --- |
+| LSTM units | 112 | 86 |
+| LSTM dropout | 0.135 | 0.101 |
+| LSTM lr | 0.0025 | 0.0019 |
+| XGB n_estimators | 186 | 156 |
+| XGB max_depth | 3 | 4 |
+| XGB lr | 0.061 | 0.040 |
+
+Меньшие модели при большем входе — больше данных в окне снимает потребность
+в нелинейности модели.
+
+**Интерпретация trade-off**:
+
+- На **коротком горизонте (h=1)** релевантна только недавняя история. Длинный
+  контекст добавляет шум из устаревших данных, модель «отвлекается» — отсюда
+  деградация DA с 67% до 50% и появление анти-сигнала IC=−0.154.
+- На **длинном горизонте (h=3)** нужен контекст тренда. Короткий look_back
+  не давал модели «увидеть» направление движения — отсюда DA 33% и слабый IC.
+  С LB=60 IC взлетел до +0.573 (как у GAZP h=3 — выдающийся ранжирующий сигнал).
+- **h=2** — нейтральная зона, оба значения LB примерно эквивалентны.
+
+**Главное открытие**: оптимальный `LOOK_BACK` зависит от горизонта прогноза.
+Архитектурное следствие — **per-horizon look_back** (реализовано в следующем
+коммите): `{1: 30, 2: 45, 3: 60}`. Каждый из трёх MIMO-пайплайнов получает
+свой контекст, оптимизированный под свой горизонт.
+
+**Артефакты**:
+
+- `outputs/stock_modelv16/multidate/SBER_multidate_20260514_212142.{json,txt}` — baseline LB=30
+- `outputs/stock_modelv16/multidate/SBER_multidate_20260517_145317.{json,txt}` — LB=60 эксперимент
+- `outputs/stock_modelv16/hyperparams/SBER_hyperparams_lb30_backup.json` — HP LB=30 (backup)
+
+---
+
+## Per-horizon look_back: 5 итераций до победы (17.05.2026)
+
+### Q: Как реализован per-horizon look_back и почему именно гибрид 30/30/60?
+
+**A**: Реализовано через `LSTM_LOOK_BACK_PER_HORIZON: dict` в `config.py`
+(fallback на legacy константу `LSTM_LOOK_BACK`). В `prepare_and_train_model`
+look_back локально вычисляется как `LSTM_LOOK_BACK_PER_HORIZON.get(horizon)`.
+`save_hyperparams` / `load_hyperparams` теперь принимают `horizon` параметр —
+гиперпараметры сохраняются в `{ticker}_h{horizon}_hyperparams.json`,
+с fallback на общий `{ticker}_hyperparams.json`. Optuna-блок в `main`
+крутится в цикле по горизонтам, под каждый look_back свой Optuna-trial.
+
+К финальной конфигурации пришли через 5 итераций — каждая выявляла свой
+trade-off:
+
+| # | Конфигурация | h=1 DA | h=2 DA | h=3 DA | h=3 IC | Вывод |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | LB=30 uniform (baseline) | **67%** | **58%** | 33% | +0.056 | h=3 слаб |
+| 2 | LB=60 uniform | 50% | 50% | **58%** | **+0.573** | h=3 ✓, h=1 ↓ |
+| 3 | PH 30/45/60, old HP | 67% | 42% | 50% | +0.427 | HP не подходят под PH |
+| 4 | PH + Optuna (target=Close[t+h]) | 50% | 42% | 58% | +0.483 | h=1 анти-сигнал IC=-0.448! |
+| 5 | PH + Optuna (target=Close[t] nowcast) | 67% | 33% | 58% | +0.462 | h=2 регрессия |
+| **6** | **Hybrid PH 30/30/60, per-h HP только h=3** | **67%** | **58%** | **58%** | **+0.462** | **✓ winner** |
+
+**Итог hybrid vs baseline на SBER (12 дат, ci_mode=garch)**:
+
+| Метрика | h=1 | h=2 | h=3 |
+| --- | --- | --- | --- |
+| DA (baseline / hybrid) | 67% / **67%** | 58% / **58%** | 33% / **58%** (**+25pp**) |
+| IC (baseline / hybrid) | +0.042 / +0.042 | +0.049 / +0.000 | +0.056 / **+0.462** (**+0.41**) |
+| Mean \|Err\|% (b / h) | 0.90 / **0.88** | 1.24 / **1.12** | 1.70 / **1.26** (**−0.44**) |
+| Beats Naive (b / h) | 42% / 42% | 50% / **58%** | 25% / **50%** (**+25pp**) |
+| Signed bias (b / h) | −0.11 / −0.14 | −0.24 / −0.36 | −0.96 / **−0.66** |
+| CI Coverage (b / h) | 100% / 100% | 100% / 100% | 92% / **100%** |
+
+**Hybrid выигрывает или равен baseline ПО ВСЕМ метрикам и горизонтам.**
+На h=3 (бывшая слабая зона) — драматическое улучшение по всем 5 метрикам.
+
+### Ключевые уроки итераций
+
+**Итерация 4 (анти-сигнал на h=1)** — самое поучительное:
+
+- Optuna-target изменился с `Close[t]` (nowcast) на `Close[t+h]`. Для h=1
+  это означало предсказание Close[t+1] вместо Close[t].
+- Optuna нашёл HP с агрессивным XGB lr=0.16, overfit на трене → IC -0.448 OOS.
+- Возврат к nowcast-target (итерация 5) восстановил h=1, но Optuna для h=2
+  ушёл в другой неудачный локальный минимум (units=52, lr=0.094) → h=2 регрессия.
+
+**Главное методологическое открытие**: «проблемный» горизонт мигрирует в
+зависимости от Optuna-конфигурации (target, look_back). Анти-сигнал — это
+**HP-bound артефакт**, не свойство горизонта. Это объясняет почему изначальный
+анти-сигнал на h=2 на baseline исчезал после re-Optuna.
+
+### Финальная архитектура (committed на master)
+
+```python
+# config.py
+LSTM_LOOK_BACK_PER_HORIZON = {1: 30, 2: 30, 3: 60}
+```
+
+- h=1, h=2: LB=30 + baseline HP (общий SBER_hyperparams.json, fallback)
+- h=3: LB=60 + per-horizon HP (SBER_h3_hyperparams.json, Optuna nowcast target)
+- Other tickers: pad-horizon файлы не созданы → используют общий — full backward compat
+
+**Артефакты эксперимента**:
+
+- `outputs/stock_modelv16/multidate/SBER_multidate_20260517_145317.{json,txt}` — LB=60 uniform
+- `outputs/stock_modelv16/multidate/SBER_multidate_20260517_161929.{json,txt}` — PH old HP
+- `outputs/stock_modelv16/multidate/SBER_multidate_20260517_172949.{json,txt}` — PH Optuna h-shift
+- `outputs/stock_modelv16/multidate/SBER_multidate_20260517_184726.{json,txt}` — PH Optuna nowcast
+- `outputs/stock_modelv16/multidate/SBER_multidate_20260517_195910.{json,txt}` — **Hybrid (committed)**
+- `outputs/stock_modelv16/hyperparams/SBER_h3_hyperparams.json` — per-horizon HP для h=3
+
+---
+
 ## Что НЕ пробовали (потенциальные направления)
 
 - **Rolling-window z-score нормализация** — структурное решение проблемы

@@ -16,6 +16,7 @@
 - **Адаптивная плотность date-ticks на графиках** — геометрически растущий шаг от текущей даты в прошлое: последняя пара недель почти ежедневно, дальше еженедельно, ещё дальше — раз в месяц/два.
 - **Целочисленная ось X на графиках** — устраняет визуальный разрыв между концом исторической линии и прогнозом из-за выходных/праздников; русские подписи легенды.
 - **Полное название тикера** в FORECAST SUMMARY и на графике — через `MOEX ISS SHORTNAME` (`fundamentals_loader.get_ticker_shortname`).
+- **Per-horizon look_back** (`LSTM_LOOK_BACK_PER_HORIZON = {1: 30, 2: 30, 3: 60}`) — каждый из трёх MIMO-пайплайнов получает свой контекст. Эксперимент v16-experiments показал: длинный контекст (LB=60) даёт +25pp Direction Accuracy и IC +0.46 на h=3 SBER, но регрессирует h=1/h=2. Гибрид: baseline LB=30 для коротких горизонтов, LB=60 + per-horizon Optuna HP только для h=3. `save_hyperparams`/`load_hyperparams` поддерживают `horizon` параметр (`{ticker}_h{horizon}_hyperparams.json` с fallback на общий `{ticker}_hyperparams.json`).
 
 ---
 

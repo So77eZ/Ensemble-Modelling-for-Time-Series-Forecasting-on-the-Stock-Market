@@ -129,6 +129,7 @@ Multi-date выявил три аномалии: (1) systematic negative bias р
 - **✅ v16 — Полное название тикера** — новая функция `get_ticker_shortname()` в `fundamentals_loader.py` запрашивает поле `SHORTNAME` из MOEX ISS; выводится в FORECAST SUMMARY и в подписи графика (`Прогноз цены: SBER — СБЕР`).
 - **✅ v16 — Расширенный вывод FORECAST SUMMARY** — для каждого горизонта добавлены: Direction (▲/▼), Δ% (от `last_close`), Confidence (HIGH/MED/LOW по walk-forward R²), Naive baseline, сравнение «модель лучше/хуже Naive».
 - **✅ v16 — Стандартизация диалога пользователя** — все 7 вопросов приведены к единому формату; Optuna по умолчанию = `y` (если нет сохранённых параметров); порядок вопроса 4 (show_plot первым).
+- **✅ v16 — Per-horizon look_back + per-horizon Optuna** — `LSTM_LOOK_BACK_PER_HORIZON = {1: 30, 2: 30, 3: 60}`. Эксперимент v16-experiments (5 итераций) показал: LB=60 даёт +25pp DA и IC +0.41 на h=3 SBER, но регрессирует h=1/h=2 (включая HP-bound анти-сигналы). Финальный гибрид: baseline LB=30 для h=1/h=2, LB=60 + per-horizon Optuna HP только для h=3. `save_hyperparams`/`load_hyperparams` поддерживают `horizon` параметр, с fallback на общий файл — full backward compat для других тикеров.
 
 ### v15.9 — Дивидендные time-varying признаки
 

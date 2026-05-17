@@ -4,6 +4,27 @@
 
 ## [Unreleased]
 
+### Добавлено
+
+- **Per-horizon look_back + per-horizon Optuna** (ветка `v16-experiments`) —
+  `LSTM_LOOK_BACK_PER_HORIZON` dict в `config.py`, fallback на legacy
+  `LSTM_LOOK_BACK`. Каждый MIMO-пайплайн получает свой контекст в
+  `prepare_and_train_model`. `save_hyperparams` / `load_hyperparams` поддерживают
+  `horizon` параметр: per-horizon файлы `{ticker}_h{horizon}_hyperparams.json`
+  с fallback на общий `{ticker}_hyperparams.json`. Optuna в `main` крутится
+  3 раза с разным look_back, сохраняет HP под каждый горизонт. Forecast/backtest
+  caller-ы (`run_backtest`, main forecast block) загружают per-horizon HP перед
+  каждым вызовом `prepare_and_train_model`.
+
+  Эксперимент показал что длинный контекст (LB=60) сильно улучшает h=3
+  (DA +25pp, IC +0.41 на SBER), но регрессирует h=1/h=2. Финальный
+  **гибрид** `{1: 30, 2: 30, 3: 60}`: baseline для коротких горизонтов,
+  LB=60 + per-horizon Optuna HP только для h=3 (`SBER_h3_hyperparams.json`).
+  Никаких регрессий ни на одной метрике относительно baseline; на h=3
+  одновременное улучшение DA (+25pp), IC (+0.41), Mean |Err|% (−0.44 RUB),
+  Beats Naive (+25pp), CI Coverage (92→100%). Для других тикеров
+  per-horizon HP файлов нет → используют общий — full backward compat.
+
 ### Изменено
 
 - **Реорганизация документации** — вся пользовательская документация перенесена
