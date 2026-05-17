@@ -108,13 +108,13 @@ python stock_modelv16.py --ticker SBER --backtest 2026-05-05 --no-gui
 - **Дивидендные time-varying признаки (3, v15.9):** `div_days_to_next` (обратный отсчёт до следующего реестра, sentinel 999), `div_next_amount`, `div_days_since_last`; look-ahead bias исключён 45-дневным окном объявления
 - **Признаки сезонности (3, v15.2):** `day_of_week` (0=пн…4=пт), `month` (1–12), `quarter` (1–4); вычисляются из поля `Date` в `update_technical_indicators`
 - **LSTM получает только подмножество** (7 фич: OHLCV + Price_Change_1 + Vol_Return_10) — даёт LSTM уникальное «сырое временное» представление, не дублирующее feature engineering XGB
-- Итого: **до 43 признаков для XGB** (динамически, зависит от Granger-скрининга макропризнаков и дивидендных)
+- Итого: **до 46 признаков для XGB** (динамически, зависит от Granger-скрининга макропризнаков). Дивидендные признаки исключены из Granger-фильтра и всегда в feature set (3 фичи: `div_days_to_next`, `div_next_amount`, `div_days_since_last`).
 
 ### 3. Нормализация
 
 - `MinMaxScaler` по всем признакам
 - Отдельный скейлер для целевой переменной `Close` (для обратного преобразования прогнозов)
-- Скользящее окно `LOOK_BACK=30` дней → тензор формы `(N, 30, 43)` для XGB, `(N, 30, 7)` для LSTM
+- Скользящее окно с **per-horizon look_back**: `LOOK_BACK = {h=1: 30, h=2: 30, h=3: 60}` (`config.py:LSTM_LOOK_BACK_PER_HORIZON`). На h=3 длинный контекст (LB=60) даёт +25pp Direction Accuracy и IC +0.41 на SBER. Тензор формы `(N, look_back, 46)` для XGB, `(N, look_back, 7)` для LSTM.
 
 ### 4. Оптимизация гиперпараметров (Optuna)
 

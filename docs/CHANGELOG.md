@@ -6,7 +6,21 @@
 
 ### Добавлено
 
-- **Per-horizon look_back + per-horizon Optuna** (ветка `v16-experiments`) —
+- **Дивидендные фичи исключены из Granger pre-screening** — `_FUND_DIV_COLS`
+  (`div_days_to_next`, `div_next_amount`, `div_days_since_last`) теперь не
+  фильтруются Granger-тестом и всегда остаются в feature set. Раньше Granger
+  стабильно отбрасывал их с p > 0.5 (для SBER 17.05.2026: 0.781/0.660/0.507),
+  потому что:
+
+  - `div_days_to_next = 999` (sentinel) ~88% времени → низкая вариативность
+  - Дивидендный gap — точечное событие 1×/год, теряется в 11-летнем шуме
+  - Pre-dividend run-up и ex-div gap — нелинейные patterns, лучше захватываются
+    деревьями XGBoost, чем линейным Granger
+
+  XGB shape вырос с (n, 30, 43) до (n, 30, 46). Реальный эффект на прогноз
+  включится при попадании в 45-дневное окно перед реестром.
+
+- **Per-horizon look_back + per-horizon Optuna** —
   `LSTM_LOOK_BACK_PER_HORIZON` dict в `config.py`, fallback на legacy
   `LSTM_LOOK_BACK`. Каждый MIMO-пайплайн получает свой контекст в
   `prepare_and_train_model`. `save_hyperparams` / `load_hyperparams` поддерживают
@@ -25,20 +39,16 @@
   Beats Naive (+25pp), CI Coverage (92→100%). Для других тикеров
   per-horizon HP файлов нет → используют общий — full backward compat.
 
-### Изменено
+- **Helper `_resolve_horizon_hp`** — трёхуровневый fallback per-horizon → common
+  → passed default. Использован в `run_backtest` и main forecast-блоке;
+  устранил дублирование загрузки HP в двух местах.
 
-- **Реорганизация документации** — вся пользовательская документация перенесена
-  в `docs/` (`architecture.md`, `improvements.md`, `benchmarks.md`, `Q_AND_A.md`,
-  `CHANGELOG.md`, `literature_review.md`). В корне остаётся только `README.md`
-  как точка входа. Удалены устаревшие артефакты: `oldCHANGELOG.md` (контент
-  мигрирован в этот файл секцией «История проекта: v1–v13») и папка
-  `alt_research/` (рабочие выгрузки LLM использованы для `literature_review.md`).
-  Обновлены пути в `stock_modelv16.py` и `stock_modelv15.py`:
-  `BENCHMARKS_FILE` теперь указывает на `docs/benchmarks.md`. `.gitignore`
-  очищен от больше не нужных правил (`oldCHANGELOG.md`, `literature_review.md`,
-  `alt_research/`).
+- **Schema versioning для HP-файлов** — поле `schema_version: 2` в JSON
+  гиперпараметров. Backward compat: `params.get('timestamp', 'unknown')`
+  для старых файлов без timestamp.
 
-### Добавлено
+- **Атомарная запись HP JSON** — через `.tmp` + `os.replace` (атомарно на
+  Windows и POSIX). Защита от corrupt JSON при крахе процесса.
 
 - **Multi-date backtest** (`--multi-backtest N`) — режим прогонa бэктеста на N
   исторических датах (первый торговый день каждого из последних N полных месяцев)
@@ -98,6 +108,29 @@
 
 ### Исправлено
 
+- **Code review fixes для per-horizon hyperparams** — после security + manual
+  review подкручены детали:
+
+  - Type hints: `int = None` → `Optional[int]`, добавлен `Tuple` для возвращаемых
+    значений `load_hyperparams`
+  - `params.get('timestamp', 'unknown')` вместо `params['timestamp']` —
+    backward compat со старыми файлами без timestamp
+  - `tests/test_hyperparams.py` — 14 новых тестов покрывают пути, save/load
+    roundtrip, schema versioning, fallback цепочку, `_resolve_horizon_hp`,
+    атомарность
+
+- **Починены 2 предсуществующих падающих теста**:
+
+  - `test_benchmark.py::test_run_benchmark_structure` — KeyError 'dir_correct'.
+    `_fake_backtest_return()` не содержал полей `forecast_dir`/`real_dir`/
+    `dir_correct`, добавленных в v15.1. Поля добавлены в fake-данные.
+  - `test_macro_loader.py::test_date_range_coverage` — мокированные функции
+    `_load_cbr_*` не вызывались из-за дискового кеша `.macro_cache.csv`
+    (добавлен в v15+). Тест замокан также `_cache_load` → `None` и
+    `_cache_save` — обход кеша, мок-функции теперь срабатывают.
+
+  Тестовый suite: **36/36 pass** (14 новых + 22 ранее проходивших).
+
 - **Визуальный разрыв на графике** (`stock_modelv16.py`, `presentation_output.py`) —
   matplotlib-ось переведена с непрерывной временно́й на целочисленный индекс торговых дней.
   Каждый торговый день занимает ровно одну позицию; выходные и праздники исключены из оси,
@@ -107,6 +140,17 @@
   удалён неиспользуемый импорт `matplotlib.dates`.
 
 ### Изменено
+
+- **Реорганизация документации** — вся пользовательская документация перенесена
+  в `docs/` (`architecture.md`, `improvements.md`, `benchmarks.md`, `Q_AND_A.md`,
+  `CHANGELOG.md`, `literature_review.md`). В корне остаётся только `README.md`
+  как точка входа. Удалены устаревшие артефакты: `oldCHANGELOG.md` (контент
+  мигрирован в этот файл секцией «История проекта: v1–v13») и папка
+  `alt_research/` (рабочие выгрузки LLM использованы для `literature_review.md`).
+  Обновлены пути в `stock_modelv16.py` и `stock_modelv15.py`:
+  `BENCHMARKS_FILE` теперь указывает на `docs/benchmarks.md`. `.gitignore`
+  очищен от больше не нужных правил (`oldCHANGELOG.md`, `literature_review.md`,
+  `alt_research/`).
 
 - **Русские подписи на основном графике** (`stock_modelv16.py`) —
   легенда и оси переведены на русский язык (`Реальная цена`, `Предсказано (тест)`,
