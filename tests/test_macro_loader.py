@@ -79,16 +79,26 @@ def test_fallback_on_failed_source(caplog):
 # ── тест 3: покрытие дат ─────────────────────────────────────────────────────
 
 def test_date_range_coverage():
-    """После ffill/bfill нет NaN при частичных пропусках (выходные)."""
-    with patch("macro_loader._load_cbr_usd_rub_history") as m_usd, \
+    """После ffill/bfill нет NaN при частичных пропусках (выходные).
+
+    Дополнительно мокается _cache_load → None, чтобы обойти дисковый кеш
+    .macro_cache.csv (добавлен в v15+): иначе load_macro_data берёт значения
+    из кеша вместо вызова _load_cbr_* функций, и моки не применяются.
+    """
+    with patch("macro_loader._cache_load", return_value=None), \
+         patch("macro_loader._cache_save"), \
+         patch("macro_loader._load_cbr_usd_rub_history") as m_usd, \
          patch("macro_loader._load_cbr_key_rate") as m_cbr, \
-         patch("macro_loader._load_moex_brent") as m_brent:
+         patch("macro_loader._load_moex_brent") as m_brent, \
+         patch("macro_loader._load_moex_index") as m_idx:
 
         # Данные только за пн и ср — вт пропущен (выходной/нет данных)
         idx = pd.to_datetime(["2024-01-08", "2024-01-10"])
         m_usd.return_value = pd.Series([89.5, 90.1], index=idx, name="usd_rub_hist")
         m_cbr.return_value = pd.Series([16.0, 16.0], index=idx, name="cbr_rate")
         m_brent.return_value = pd.Series([75.2, 76.0], index=idx, name="brent_price")
+        # imoex/rtsi: возвращаем пустые серии (Granger всё равно отфильтрует)
+        m_idx.return_value = pd.Series(dtype=float)
 
         result = load_macro_data("2024-01-08", "2024-01-10")
 

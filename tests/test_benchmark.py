@@ -92,16 +92,21 @@ def test_append_twice_adds_two_rows(tmp_path):
 
 
 def _fake_backtest_return():
+    # base_price для fake: пусть 260.0, тогда forecasts > 260 → forecast_dir='up'.
+    # real_dir определяется аналогично. dir_correct = (forecast_dir == real_dir).
     results_list = [
         {'horizon': 1, 'forecast': 263.1, 'real': 261.8,
          'error': 1.3, 'error_pct': 0.50, 'in_ci': True,
-         'lower_ci': 258.0, 'upper_ci': 268.0},
+         'lower_ci': 258.0, 'upper_ci': 268.0,
+         'forecast_dir': 'up', 'real_dir': 'up', 'dir_correct': True},
         {'horizon': 2, 'forecast': 264.0, 'real': 263.2,
          'error': 0.8, 'error_pct': 0.30, 'in_ci': True,
-         'lower_ci': 259.0, 'upper_ci': 269.0},
+         'lower_ci': 259.0, 'upper_ci': 269.0,
+         'forecast_dir': 'up', 'real_dir': 'up', 'dir_correct': True},
         {'horizon': 3, 'forecast': 262.5, 'real': 260.1,
          'error': 2.4, 'error_pct': 0.92, 'in_ci': False,
-         'lower_ci': 256.0, 'upper_ci': 265.0},
+         'lower_ci': 256.0, 'upper_ci': 265.0,
+         'forecast_dir': 'up', 'real_dir': 'up', 'dir_correct': True},
     ]
     forecasts = {1: [263.1], 2: [264.0], 3: [262.5]}
     forecast_dates = ['2024-10-15', '2024-10-16', '2024-10-17']
