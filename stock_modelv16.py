@@ -1002,9 +1002,17 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         *(['is_post_restructure'] if 'is_post_restructure' in data.columns else []),
     ]
 
-    # Granger-скрининг: убираем макро- и дивидендные признаки, не предсказывающие Close (p >= 0.05)
+    # Granger-скрининг: убираем макро-признаки, не предсказывающие Close (p >= 0.05).
+    #
+    # Дивидендные признаки (_FUND_DIV_COLS) НЕ скринятся по Granger:
+    # - div_days_to_next 999 (sentinel) ~88% времени (только за 45 дней до реестра ≠ 999)
+    # - дивидендный gap — точечное событие 1×/год, теряется в 11-летнем шуме
+    # - Granger ловит линейные краткосрочные связи; pre-dividend run-up
+    #   и ex-div gap — нелинейные patterns, лучше захватываются деревьями XGB
+    # На SBER 17.05.2026 все 3 div-фичи отбрасывались (p=0.78/0.66/0.51) → модель
+    # игнорировала дивидендный контекст. Убираем filter для div, доверяем XGB.
     from statsmodels.tsa.stattools import grangercausalitytests as _gct
-    _granger_cols = [c for c in _MACRO_COLS + _FUND_DIV_COLS if c in features]
+    _granger_cols = [c for c in _MACRO_COLS if c in features]
     for _mc in _granger_cols:
         # Исключаем константные признаки (NaN или нулевая дисперсия) — Granger на них не работает
         _col_data = data[_mc].dropna()
@@ -2270,8 +2278,10 @@ if __name__ == '__main__':
         ]
 
         # Granger-скрининг для Optuna: те же правила, что и в основной ветке
+        # (только _MACRO_COLS, дивидендные не скринятся — см. комментарий в
+        # prepare_and_train_model).
         from statsmodels.tsa.stattools import grangercausalitytests as _gct
-        for _mc in [c for c in _MACRO_COLS + _FUND_DIV_COLS if c in features]:
+        for _mc in [c for c in _MACRO_COLS if c in features]:
             _col_data = data_for_opt[_mc].dropna()
             if _col_data.empty or _col_data.std() == 0:
                 features.remove(_mc)
