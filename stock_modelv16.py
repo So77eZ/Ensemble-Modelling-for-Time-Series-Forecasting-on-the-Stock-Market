@@ -92,7 +92,8 @@ _FUND_DIV_COLS = ['div_days_to_next', 'div_next_amount', 'div_days_since_last']
 _LSTM_FEATURES = ['Open', 'High', 'Low', 'Close', 'Volume', 'Price_Change_1', 'Vol_Return_10']
 
 from config import (
-    LSTM_LOOK_BACK, LSTM_EPOCHS, LSTM_PATIENCE, LSTM_BATCH_SIZE,
+    LSTM_LOOK_BACK, LSTM_LOOK_BACK_PER_HORIZON,
+    LSTM_EPOCHS, LSTM_PATIENCE, LSTM_BATCH_SIZE,
     LSTM_LEARNING_RATE, LSTM_DROPOUT_RATE, LSTM_UNITS,
     XGBOOST_N_ESTIMATORS, XGBOOST_MAX_DEPTH, XGBOOST_LEARNING_RATE,
     XGBOOST_SUBSAMPLE, XGBOOST_COLSAMPLE_BYTREE, XGBOOST_RANDOM_STATE,
@@ -152,26 +153,44 @@ BENCHMARKS_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 HYPERPARAMS_DIR = os.path.join(MODEL_OUTPUT_DIR, 'hyperparams')
 os.makedirs(HYPERPARAMS_DIR, exist_ok=True)
 
-def save_hyperparams(ticker, lstm_params, xgb_params):
-    """Сохранение оптимальных гиперпараметров для тикера"""
+def _hyperparams_path(ticker: str, horizon: int = None) -> str:
+    """Путь к файлу гиперпараметров. С horizon — per-horizon файл, иначе
+    legacy общий файл (используется как fallback)."""
+    if horizon is None:
+        return os.path.join(HYPERPARAMS_DIR, f'{ticker}_hyperparams.json')
+    return os.path.join(HYPERPARAMS_DIR, f'{ticker}_h{horizon}_hyperparams.json')
+
+
+def save_hyperparams(ticker, lstm_params, xgb_params, horizon: int = None):
+    """Сохранение гиперпараметров для тикера. С horizon — per-horizon файл."""
     params = {
         'timestamp': datetime.now().isoformat(),
+        'horizon': horizon,
         'lstm': lstm_params,
-        'xgboost': xgb_params
+        'xgboost': xgb_params,
     }
-    filepath = os.path.join(HYPERPARAMS_DIR, f'{ticker}_hyperparams.json')
+    filepath = _hyperparams_path(ticker, horizon)
     with open(filepath, 'w') as f:
         json.dump(params, f, indent=2)
     logger.info(f"Hyperparameters saved: {filepath}")
 
-def load_hyperparams(ticker):
-    """Загрузка сохраненных гиперпараметров для тикера"""
-    filepath = os.path.join(HYPERPARAMS_DIR, f'{ticker}_hyperparams.json')
+
+def load_hyperparams(ticker, horizon: int = None):
+    """Загрузка гиперпараметров. С horizon: сначала пробуем per-horizon файл,
+    при отсутствии — fallback на legacy общий файл."""
+    if horizon is not None:
+        filepath = _hyperparams_path(ticker, horizon)
+        if os.path.exists(filepath):
+            with open(filepath, 'r') as f:
+                params = json.load(f)
+            logger.info(f"Loaded per-horizon h={horizon} hyperparameters from: {filepath} (saved {params['timestamp']})")
+            return params['lstm'], params['xgboost']
+        logger.info(f"Per-horizon h={horizon} HP not found, falling back to common file")
+    filepath = _hyperparams_path(ticker)
     if os.path.exists(filepath):
         with open(filepath, 'r') as f:
             params = json.load(f)
-        logger.info(f"Loaded hyperparameters from: {filepath}")
-        logger.info(f"Saved on: {params['timestamp']}")
+        logger.info(f"Loaded common hyperparameters from: {filepath} (saved {params['timestamp']})")
         return params['lstm'], params['xgboost']
     return None, None
 
@@ -992,11 +1011,15 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     lstm_features = [f for f in _LSTM_FEATURES if f in features]
     logger.info(f"LSTM features ({len(lstm_features)}/{len(features)}): {lstm_features}")
 
-    logger.info(f"Preparing sequences with look_back={LSTM_LOOK_BACK}, horizon={horizon}...")
+    # Per-horizon look_back: для каждого горизонта свой контекст (см. config.py
+    # LSTM_LOOK_BACK_PER_HORIZON). Fallback на LSTM_LOOK_BACK если горизонт
+    # не в словаре (например, custom horizon при future расширении).
+    look_back = LSTM_LOOK_BACK_PER_HORIZON.get(horizon, LSTM_LOOK_BACK)
+    logger.info(f"Preparing sequences with look_back={look_back} (per-horizon), horizon={horizon}...")
     X, X_lstm, y = [], [], []
-    for i in range(LSTM_LOOK_BACK, len(scaled_df) - horizon):
-        X.append(scaled_df.iloc[i-LSTM_LOOK_BACK:i].values)
-        X_lstm.append(scaled_df[lstm_features].iloc[i-LSTM_LOOK_BACK:i].values)
+    for i in range(look_back, len(scaled_df) - horizon):
+        X.append(scaled_df.iloc[i-look_back:i].values)
+        X_lstm.append(scaled_df[lstm_features].iloc[i-look_back:i].values)
         y.append(scaled_df['Close'].iloc[i + horizon])
     X, X_lstm, y = np.array(X), np.array(X_lstm), np.array(y)
     logger.info(f"Total sequences: {len(X)} | XGB shape={X.shape}, LSTM shape={X_lstm.shape}")
@@ -1086,7 +1109,7 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         }
         
         X_train_flat = X_train.reshape(X_train.shape[0], -1)
-        flat_feature_names = [f"{feat}_t{t}" for t in range(LSTM_LOOK_BACK) for feat in features]
+        flat_feature_names = [f"{feat}_t{t}" for t in range(look_back) for feat in features]
         
         xgb_model = xgb.XGBRegressor(**xgb_params)
         xgb_model.fit(X_train_flat, y_train)
@@ -1302,12 +1325,12 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         # Если взять end_date, next_business_day пропустит сегодня и прогноз начнётся с послезавтра.
         base_date = pd.to_datetime(data['Date'].max()).to_pydatetime()
 
-    last_features = data[features].tail(LSTM_LOOK_BACK)
+    last_features = data[features].tail(look_back)
     last_scaled = scaler.transform(last_features)
     last_scaled_df = pd.DataFrame(last_scaled, columns=features, index=last_features.index)
 
     # LSTM-вход — только подмножество фич (см. _LSTM_FEATURES)
-    _lstm_input = last_scaled_df[lstm_features].values.reshape(1, LSTM_LOOK_BACK, len(lstm_features))
+    _lstm_input = last_scaled_df[lstm_features].values.reshape(1, look_back, len(lstm_features))
     lstm_pred_scaled = float(np.mean(
         [predict_lstm_torch(_m, _lstm_input)[0] for _m in best_lstm_ensemble]
     ))
@@ -1399,9 +1422,14 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
 
     all_results = {}
     for h in [1, 2, 3]:
+        # Per-horizon HP: загружаем для текущего горизонта (fallback на общий
+        # файл, fallback на передаваемые best_lstm_params/best_xgb_params).
+        _h_lstm, _h_xgb = load_hyperparams(ticker, horizon=h)
+        if _h_lstm is None or _h_xgb is None:
+            _h_lstm, _h_xgb = best_lstm_params, best_xgb_params
         all_results[h] = prepare_and_train_model(
             data, ticker, backtest_date,
-            best_lstm_params, best_xgb_params,
+            _h_lstm, _h_xgb,
             backtest_mode=True, backtest_date=backtest_date,
             horizon=h,
             ci_mode=ci_mode,
@@ -2236,20 +2264,41 @@ if __name__ == '__main__':
         scaled_data_opt = scaler_opt.fit_transform(data_for_opt[features])
         scaled_df_opt = pd.DataFrame(scaled_data_opt, columns=features, index=data_for_opt.index)
 
-        X_opt, y_opt = [], []
-        for i in range(LSTM_LOOK_BACK, len(scaled_df_opt)):
-            X_opt.append(scaled_df_opt.iloc[i-LSTM_LOOK_BACK:i].values)
-            y_opt.append(scaled_df_opt['Close'].iloc[i])
-        X_opt, y_opt = np.array(X_opt), np.array(y_opt)
+        # Per-horizon Optuna: оптимизируем HP отдельно для каждого горизонта,
+        # так как input shape (look_back × n_features) отличается. HP, найденные
+        # для одного look_back, не оптимальны для другого — особенно XGB с
+        # сильно разной flat-размерностью.
+        #
+        # ВАЖНО: target = Close[t] (nowcast), не Close[t+h]. Первая попытка
+        # (Close[t+h]) дала сильный анти-сигнал на h=1 (IC -0.448) — h-shift
+        # target поменял Optuna-landscape, найдены HP с агрессивным XGB lr=0.16,
+        # которые overfitting на трене и анти-предсказывают на тесте. С
+        # nowcast-target Optuna находит HP, аналогичные baseline для каждой
+        # look_back длины — без побочных эффектов на directional accuracy.
+        per_horizon_hp = {}
+        for _h in [1, 2, 3]:
+            _lb = LSTM_LOOK_BACK_PER_HORIZON.get(_h, LSTM_LOOK_BACK)
+            logger.info("\n" + "=" * 60)
+            logger.info(f"OPTUNA: горизонт h={_h}, look_back={_lb} (target=Close[t] nowcast)")
+            logger.info("=" * 60)
 
-        logger.info(f"Optimizing LSTM params with Optuna ({n_trials} trials)...")
-        best_lstm_params = optimize_lstm_params(X_opt, y_opt, n_trials=n_trials)
+            X_opt, y_opt = [], []
+            for i in range(_lb, len(scaled_df_opt)):
+                X_opt.append(scaled_df_opt.iloc[i-_lb:i].values)
+                y_opt.append(scaled_df_opt['Close'].iloc[i])
+            X_opt, y_opt = np.array(X_opt), np.array(y_opt)
 
-        logger.info(f"Optimizing XGBoost params with Optuna ({n_trials} trials)...")
-        best_xgb_params = optimize_xgboost_params(X_opt.reshape(X_opt.shape[0], -1), y_opt, n_trials=n_trials)
-        
-        # Сохраняем найденные параметры
-        save_hyperparams(ticker, best_lstm_params, best_xgb_params)
+            logger.info(f"  Optimizing LSTM params ({n_trials} trials, input shape {X_opt.shape})...")
+            _lstm_p = optimize_lstm_params(X_opt, y_opt, n_trials=n_trials)
+            logger.info(f"  Optimizing XGBoost params ({n_trials} trials)...")
+            _xgb_p = optimize_xgboost_params(X_opt.reshape(X_opt.shape[0], -1), y_opt, n_trials=n_trials)
+
+            save_hyperparams(ticker, _lstm_p, _xgb_p, horizon=_h)
+            per_horizon_hp[_h] = (_lstm_p, _xgb_p)
+
+        # Для совместимости с кодом ниже: используем HP h=1 как «default» best_*_params
+        # (run_backtest и main всё равно перезагрузят per-horizon из файлов).
+        best_lstm_params, best_xgb_params = per_horizon_hp[1]
     else:
         # Загружаем сохраненные или используем дефолтные
         saved_lstm, saved_xgb = load_hyperparams(ticker)
@@ -2383,9 +2432,13 @@ if __name__ == '__main__':
         # Обычный режим прогноза
         all_results = {}
         for h in [1, 2, 3]:
+            # Per-horizon HP: загружаем под горизонт; fallback на общий best_*.
+            _h_lstm, _h_xgb = load_hyperparams(ticker, horizon=h)
+            if _h_lstm is None or _h_xgb is None:
+                _h_lstm, _h_xgb = best_lstm_params, best_xgb_params
             all_results[h] = prepare_and_train_model(
                 data, ticker, end_date,
-                best_lstm_params, best_xgb_params,
+                _h_lstm, _h_xgb,
                 backtest_mode=False,
                 horizon=h,
                 ci_mode=ci_mode,
