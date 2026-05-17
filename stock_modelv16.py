@@ -32,6 +32,7 @@ import random
 import time
 import matplotlib
 import argparse
+from typing import Optional, Tuple
 
 from datetime import datetime, timedelta
 
@@ -153,7 +154,13 @@ BENCHMARKS_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 HYPERPARAMS_DIR = os.path.join(MODEL_OUTPUT_DIR, 'hyperparams')
 os.makedirs(HYPERPARAMS_DIR, exist_ok=True)
 
-def _hyperparams_path(ticker: str, horizon: int = None) -> str:
+# Версия схемы файлов гиперпараметров. Bump при breaking changes структуры
+# (например, добавление обязательного поля). Loader использует для backward
+# совместимости со старыми файлами без 'schema_version'.
+_HYPERPARAMS_SCHEMA_VERSION = 2
+
+
+def _hyperparams_path(ticker: str, horizon: Optional[int] = None) -> str:
     """Путь к файлу гиперпараметров. С horizon — per-horizon файл, иначе
     legacy общий файл (используется как fallback)."""
     if horizon is None:
@@ -161,38 +168,67 @@ def _hyperparams_path(ticker: str, horizon: int = None) -> str:
     return os.path.join(HYPERPARAMS_DIR, f'{ticker}_h{horizon}_hyperparams.json')
 
 
-def save_hyperparams(ticker, lstm_params, xgb_params, horizon: int = None):
-    """Сохранение гиперпараметров для тикера. С horizon — per-horizon файл."""
+def save_hyperparams(ticker: str, lstm_params: dict, xgb_params: dict,
+                     horizon: Optional[int] = None) -> None:
+    """Атомарная запись гиперпараметров. С horizon — per-horizon файл.
+
+    Атомарность: пишем в .tmp, затем os.replace в финальный путь.
+    Гарантирует что либо старый файл остался цел, либо появился полный новый.
+    """
     params = {
+        'schema_version': _HYPERPARAMS_SCHEMA_VERSION,
         'timestamp': datetime.now().isoformat(),
         'horizon': horizon,
         'lstm': lstm_params,
         'xgboost': xgb_params,
     }
     filepath = _hyperparams_path(ticker, horizon)
-    with open(filepath, 'w') as f:
+    tmp_path = filepath + '.tmp'
+    with open(tmp_path, 'w') as f:
         json.dump(params, f, indent=2)
+    os.replace(tmp_path, filepath)  # атомарно на Windows/POSIX
     logger.info(f"Hyperparameters saved: {filepath}")
 
 
-def load_hyperparams(ticker, horizon: int = None):
+def load_hyperparams(ticker: str, horizon: Optional[int] = None
+                     ) -> Tuple[Optional[dict], Optional[dict]]:
     """Загрузка гиперпараметров. С horizon: сначала пробуем per-horizon файл,
-    при отсутствии — fallback на legacy общий файл."""
+    при отсутствии — fallback на legacy общий файл. Если ничего нет — (None, None)."""
     if horizon is not None:
         filepath = _hyperparams_path(ticker, horizon)
         if os.path.exists(filepath):
             with open(filepath, 'r') as f:
                 params = json.load(f)
-            logger.info(f"Loaded per-horizon h={horizon} hyperparameters from: {filepath} (saved {params['timestamp']})")
+            ts = params.get('timestamp', 'unknown')
+            logger.info(f"Loaded per-horizon h={horizon} hyperparameters from: {filepath} (saved {ts})")
             return params['lstm'], params['xgboost']
         logger.info(f"Per-horizon h={horizon} HP not found, falling back to common file")
     filepath = _hyperparams_path(ticker)
     if os.path.exists(filepath):
         with open(filepath, 'r') as f:
             params = json.load(f)
-        logger.info(f"Loaded common hyperparameters from: {filepath} (saved {params['timestamp']})")
+        ts = params.get('timestamp', 'unknown')
+        logger.info(f"Loaded common hyperparameters from: {filepath} (saved {ts})")
         return params['lstm'], params['xgboost']
     return None, None
+
+
+def _resolve_horizon_hp(ticker: str, horizon: int,
+                        fallback_lstm: dict, fallback_xgb: dict
+                        ) -> Tuple[dict, dict]:
+    """Загрузить HP для горизонта с поэтапным fallback'ом.
+
+    1. Per-horizon файл {ticker}_h{horizon}_hyperparams.json
+    2. Common файл {ticker}_hyperparams.json (через load_hyperparams fallback)
+    3. Переданные fallback_lstm / fallback_xgb (обычно baseline/default)
+
+    Используется в run_backtest и main forecast block — устраняет дублирование
+    одной и той же логики разрешения per-horizon HP.
+    """
+    lstm_p, xgb_p = load_hyperparams(ticker, horizon=horizon)
+    if lstm_p is None or xgb_p is None:
+        return fallback_lstm, fallback_xgb
+    return lstm_p, xgb_p
 
 def get_default_hyperparams():
     """Дефолтные гиперпараметры если Optuna не используется"""
@@ -1422,11 +1458,7 @@ def run_backtest(data, ticker, backtest_date, best_lstm_params, best_xgb_params,
 
     all_results = {}
     for h in [1, 2, 3]:
-        # Per-horizon HP: загружаем для текущего горизонта (fallback на общий
-        # файл, fallback на передаваемые best_lstm_params/best_xgb_params).
-        _h_lstm, _h_xgb = load_hyperparams(ticker, horizon=h)
-        if _h_lstm is None or _h_xgb is None:
-            _h_lstm, _h_xgb = best_lstm_params, best_xgb_params
+        _h_lstm, _h_xgb = _resolve_horizon_hp(ticker, h, best_lstm_params, best_xgb_params)
         all_results[h] = prepare_and_train_model(
             data, ticker, backtest_date,
             _h_lstm, _h_xgb,
@@ -2432,10 +2464,7 @@ if __name__ == '__main__':
         # Обычный режим прогноза
         all_results = {}
         for h in [1, 2, 3]:
-            # Per-horizon HP: загружаем под горизонт; fallback на общий best_*.
-            _h_lstm, _h_xgb = load_hyperparams(ticker, horizon=h)
-            if _h_lstm is None or _h_xgb is None:
-                _h_lstm, _h_xgb = best_lstm_params, best_xgb_params
+            _h_lstm, _h_xgb = _resolve_horizon_hp(ticker, h, best_lstm_params, best_xgb_params)
             all_results[h] = prepare_and_train_model(
                 data, ticker, end_date,
                 _h_lstm, _h_xgb,
