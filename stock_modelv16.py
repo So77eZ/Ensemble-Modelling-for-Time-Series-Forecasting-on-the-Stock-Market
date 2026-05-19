@@ -1673,6 +1673,19 @@ def _aggregate_multidate(per_date_results: list) -> dict:
         except Exception:
             ic = 0.0
 
+        # F1 / Precision / Recall: бинарная классификация направления.
+        # Positive class = 'up'. TP=модель up & реал up; FP=модель up & реал down;
+        # FN=модель down & реал up; TN=модель down & реал down.
+        # Для трейдинга Precision важнее Recall (ложный сигнал «вверх» = убыток),
+        # но F1 даёт сбалансированную оценку на неравновесных выборках.
+        tp = sum(1 for o in observations if o['forecast_dir'] == 'up'   and o['real_dir'] == 'up')
+        fp = sum(1 for o in observations if o['forecast_dir'] == 'up'   and o['real_dir'] == 'down')
+        fn = sum(1 for o in observations if o['forecast_dir'] == 'down' and o['real_dir'] == 'up')
+        tn = sum(1 for o in observations if o['forecast_dir'] == 'down' and o['real_dir'] == 'down')
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1        = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
         agg[h] = {
             'n_observations':           n,
             'mean_abs_error_pct':       float(np.mean(errors_pct)),
@@ -1686,6 +1699,10 @@ def _aggregate_multidate(per_date_results: list) -> dict:
             'beats_naive':              beats_nv / n,
             'mean_naive_error_pct':     float(np.mean(naive_pct)),
             'ic_spearman':              ic,
+            'precision_up':             precision,
+            'recall_up':                recall,
+            'f1_up':                    f1,
+            'confusion_matrix':         {'tp': tp, 'fp': fp, 'fn': fn, 'tn': tn},
         }
     return agg
 
@@ -1832,6 +1849,13 @@ def _format_multidate_report(result: dict, ticker_name: str = "") -> str:
         out.append(f"  Model beats Naive:    {a['beats_naive']*100:.1f}%  "
                    f"(mean Naive Error%: {a['mean_naive_error_pct']:.2f})")
         out.append(f"  IC (Spearman):        {a['ic_spearman']:+.3f}  [{_ic_interpretation(a['ic_spearman'])}]")
+        cm = a['confusion_matrix']
+        out.append(f"  Precision (up=pos):   {a['precision_up']*100:.1f}%  "
+                   f"(модель сказала 'вверх' и была права)")
+        out.append(f"  Recall (up=pos):      {a['recall_up']*100:.1f}%  "
+                   f"(модель поймала эту долю реальных 'вверх')")
+        out.append(f"  F1 (up=pos):          {a['f1_up']*100:.1f}%  "
+                   f"[TP={cm['tp']} FP={cm['fp']} FN={cm['fn']} TN={cm['tn']}]")
         out.append("")
     out.append(sep)
     return "\n".join(out)
