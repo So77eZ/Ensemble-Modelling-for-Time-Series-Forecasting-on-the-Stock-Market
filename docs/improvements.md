@@ -40,6 +40,7 @@
 - **Фундаментальные признаки — только snapshot** — `market_cap`, `roe`, `pe_ratio` берутся как текущие значения и продублированы на всю историю; модель не видит их динамику. (Дивиденды решены через MOEX ISS в v15.9; P/E/ROE в динамике требуют платного источника.)
 - ~~**ARCH-эффект в остатках**~~ — **РЕШЕНО (v16)**: Ljung-Box на `|res|` подтверждал ARCH-эффект; добавлен `ci_mode='garch'` — GARCH(1,1) на OOS-остатках даёт σ_t, CI = pred ± 1.645·σ_t (90%). Адаптивная ширина: уже в спокойные периоды, шире в волатильные. На SBER 13.05.2026 GARCH-σ для h=1 = 4.84 RUB vs эмпирическая std = 5.73 RUB — GARCH видит, что *сейчас* рынок спокойнее средней истории. Старые `wide`/`narrow` режимы остаются как альтернатива.
 - **Отрицательный R² на трендовых рынках** — при нисходящем тренде (GAZP 2024) R² падает до −1.4: OOS-окна имеют иной тренд, чем обучающие. Точечные прогнозы при этом адекватны (~2%), CI покрывает 100%.
+- **Проверить adjusted vs unadjusted close в `moexalgo`** — потенциальный data quality bug. `Ticker(...).candles(period='1D')` использует MOEX ISS endpoint, который по умолчанию отдаёт **unadjusted** свечи (без коррекции на дивиденды и сплиты). Если это так, дивидендный гэп в данных выглядит как реальное падение цены, и модель может научиться "предсказывать падение перед реестром" — но это **технический артефакт**, не торговый сигнал. Проверка: для SBER на дату закрытия реестра сравнить `Close[ex_date] − Close[ex_date−1]` с `−div_amount`. Если разница ≈ 0, значит unadjusted (баг). Если ≈ `−div_amount`, значит уже adjusted. Решение в случае бага: либо использовать adjusted candles (если `moexalgo` поддерживает), либо вручную корректировать через `div_amount` из `fundamentals_loader`. Затронуты все тикеры с дивидендами (SBER, LKOH, GAZP, MGNT, MTSS).
 - ~~**TCSG данные обрываются 2024-11-27**~~ — **РЕШЕНО (v15.13)**: TCS Group → «Т-Технологии» (тикер MOEX: **T**), MOEX уже отдаёт под тикером `T` склеенную историю (1697 строк, 2019-10-28 → сегодня), отдельная склейка не нужна (в отличие от YDEX, где YNDX и YDEX раздельны). В коде: `--ticker TCSG` или `--ticker T` оба возвращают объединённую серию + дамми `is_post_restructure` по дате 2024-11-28. Эффект: R² h=1: 0.014 → **0.659** (+64.5pp), h=2: -0.31 → **0.509** (+82pp), h=3: -1.00 → **0.373** (+137pp). Среднее R²: -0.43 → +0.514 (+95pp). Модель TCSG/T теперь работает на уровне SBER/LKOH/GAZP.
 - ~~**YDEX: структурный разрыв в июле 2024**~~ — **РЕШЕНО (v15.12)**: добавлен дамми-признак `is_post_restructure` (0 для YNDX-истории, 1 для YDEX) в `_load_single_ticker`. XGB видит дамми как "переключатель режима". Эффект: R² h=1: 0.493 → 0.604 (+11.1pp), h=3: 0.320 → 0.396 (+7.6pp), h=2: 0.403 → 0.362 (-4.1pp, шум). В среднем +4.9pp R². LSTM остался 0.000 — структурный шок это разовое событие, его может использовать только XGB.
 
@@ -53,6 +54,147 @@
 ### Что можно добавить
 
 **В работе (запланировано)**
+
+**Ближайшая разработка — Streamlit-дашборд для предзащиты/защиты**
+
+Минимальный интерактивный демо-инструмент на 1–2 вечера для показа комиссии. Цель — иметь интерактив на случай "запустите на другом тикере" вместо лезть в консоль.
+
+Стек:
+
+- `streamlit` (один файл `streamlit_app.py`)
+- Переиспользует существующие функции `load_stock_data_moex_test`, `run_backtest`, `load_macro_data` и т.д. из `stock_modelv16.py`
+- Опционально: `@st.cache_data` для кэширования загрузки данных между переключениями тикеров
+- Pre-cache JSON-результатов `outputs/stock_modelv16/multidate/*.json` — UI читает уже посчитанное, не запускает walk-forward в живую
+
+Структура:
+
+- **Сайдбар:** выпадающий список тикеров (SBER/LKOH/GAZP/MGNT/MTSS), date picker для бэктеста, ползунок `horizon`, тоггл `ci_mode` (wide/narrow/garch), кнопка "Запустить"
+- **Главная панель:**
+  - график matplotlib через `st.pyplot` (история + прогноз + полоса CI)
+  - таблица с per-horizon: forecast / Δ% / direction / CI / confidence
+  - плашка "beats Naive" (зелёная/красная) + сравнение Error % vs Naive Error %
+  - метрики (если выбрана историческая дата): Direction Accuracy, IC, CI Coverage
+- **Multi-date вкладка:** табличка 12 дат × 3 горизонта с агрегированными Wilson 95% CI
+
+Запуск: `streamlit run streamlit_app.py`. Никакого деплоя — локально на ноуте, защита в LAN.
+
+Риски: если запустить полный walk-forward через UI — 5–10 минут ожидания. Решение: дефолт — читать pre-cached JSON, кнопка "Live run" отдельная с предупреждением.
+
+Время: 6–8 часов.
+
+**Долгосрочная разработка (после защиты) — FastAPI + React/Vue SPA**
+
+Полноценный SaaS-вид как продолжение проекта после защиты диплома. Цель — упаковать исследование в продуктовую оболочку и использовать как portfolio piece.
+
+Архитектура:
+
+```text
+backend/                         frontend/
+  app.py (FastAPI + uvicorn)      src/
+  ├── /api/tickers (GET)          ├── pages/
+  ├── /api/forecast (POST)        │   ├── Dashboard.tsx
+  │     {ticker, date, horizon,   │   ├── MultiDate.tsx
+  │      ci_mode}                 │   └── Compare.tsx
+  ├── /api/multidate/{ticker}     ├── components/
+  │     (читает pre-cached JSON)  │   ├── TickerSelect, ForecastCard
+  ├── /api/history/{ticker}       │   ├── CIChart (recharts/plotly.js)
+  │     (OHLCV для графика)       │   └── MetricsTable
+  ├── models/ (pydantic схемы)    ├── api/ (TanStack Query клиент,
+  └── services/ (обёртки над      │     типизация через openapi-typescript)
+        prepare_and_train_model   └── styles/ (Tailwind + shadcn/ui)
+        run_backtest)
+```
+
+Стек:
+
+- **Backend:** Python FastAPI (см. ниже про "почему не Go"), pydantic для схем, uvicorn, переиспользование существующих функций без переписывания
+- **Frontend:** Vite + React + TypeScript + TailwindCSS + shadcn/ui + recharts/plotly.js + TanStack Query + Zod
+- **Кэширование:** `@functools.lru_cache` на загрузку данных, Redis опционально для prod
+- **Async:** FastAPI native async для параллельных загрузок macro/dividend/fund (уже распараллелено в `ThreadPoolExecutor`, можно перевести на `asyncio.gather`)
+
+Ключевые UI-фичи (того, что Streamlit не умеет):
+
+- Анимированные CI-полосы (расширяющийся "конус неопределённости" через d3/recharts)
+- Tooltip с детализацией метрик при наведении на точку прогноза
+- Side-by-side сравнение тикеров с синхронизированным zoom
+- Multi-date heatmap (5 тикеров × 12 дат, цветом — DA или IC)
+- Тёмная тема + современный UI (Tailwind + shadcn)
+- WebSocket прогресс-бар для Optuna в реальном времени
+- Loader/skeleton при загрузке
+
+Деплой (опционально):
+
+- Backend — Railway/Render/Fly.io (env vars для секретов)
+- Frontend — Vercel/Netlify (статика)
+- Domain — собственный, через Cloudflare
+- API key middleware для своего сервиса (rate limiting + auth)
+
+Защитимая формулировка для комиссии: "Прикладной интерфейс реализован как отдельный SPA с FastAPI-бэкендом, чтобы продемонстрировать возможность интеграции исследовательского кода в продуктовую среду. Это **не часть научного вклада**, а демонстрационная оболочка."
+
+Время: 30–40 часов (~1.5–2 недели вечеров для уверенного фронтендера).
+
+**Почему backend на Python, а не Go**
+
+Соблазнительно сделать backend на Go для портфолио (быстрее, single binary, goroutines), но для этого проекта **Python FastAPI — правильный выбор**:
+
+1. **Вся ML-логика на Python.** PyTorch, XGBoost, scikit-learn, pandas, Optuna, statsmodels, arch — всё Python-only. Go придётся либо вызывать Python через subprocess (медленно, уродливо), либо строить gRPC-мост к Python-сервису (двойная сложность), либо ограничиться чтением pre-cached JSON (тогда Go = file server, незачем).
+
+2. **Bottleneck — это ML compute, не API latency.** Walk-forward на 3000 точек × 54 модели занимает минуты, а не миллисекунды. Скорость Go (~10× быстрее Python на routing) тут не имеет значения — пока Go-handler ждёт ответа от Python-воркера, ты теряешь весь выигрыш.
+
+3. **FastAPI достаточно быстр.** На современном Python с `uvicorn[standard]` (uvloop + httptools) FastAPI выдаёт ~30–50k req/sec на простых endpoint'ах. Для дипломного демо/портфолио этого хватает с запасом.
+
+4. **Pydantic ≈ Go structs.** Если нравится type safety Go — Pydantic v2 даёт почти то же с runtime-валидацией. OpenAPI генерится автоматически.
+
+**Когда Go реально оправдан для расширения:**
+
+- **Тонкий proxy-слой** перед Python API (auth, rate limiting, caching) — реальный production-паттерн. Но это overkill для дипломного демо.
+- Если хочешь Go-experience в резюме — лучше сделать **отдельный pet-project** (не привязанный к ML), чем городить мост.
+
+**API-ключи и секреты в SaaS-режиме**
+
+Текущее состояние (локально): `.env` файл с `TINVEST_TOKEN`, `MOEXALGO_TOKEN`, `INVEST_TOKEN` загружается через `python-dotenv`, в `.gitignore`. **Это правильный подход для локального dev.**
+
+При деплое SaaS:
+
+| Что | Где хранится | Кто видит |
+| --- | --- | --- |
+| Ключи MOEX/T-Bank/ЦБ | Backend env vars (Railway/Render secret manager) | Только бэкенд-процесс |
+| URL backend API | Frontend env var (Vite `VITE_API_URL`) | Видно в браузере — но это публичный URL |
+| API-ключ твоего сервиса (если защищаешь от чужого использования) | Backend env vars + middleware проверки | Только backend |
+| Сессии пользователей | JWT в httpOnly cookie | Браузер хранит, JS не читает |
+
+**Жёсткие правила (security 101):**
+
+1. **Никогда не клади ключи в код фронтенда.** Всё, что попадает в JS bundle, видно в браузере через DevTools. Это включает `.env.local` в Next.js (если префикс `NEXT_PUBLIC_*` или `VITE_*` — оно идёт в bundle).
+2. **Frontend никогда не вызывает MOEX/T-Bank напрямую.** Только через свой backend. Backend — единственный держатель ключей. Frontend → `POST /api/forecast` → backend → MOEX API → backend → JSON для frontend.
+3. **CORS на backend** — разреши только свой frontend-домен (`https://your-app.vercel.app`), не `*`.
+4. **Rate limiting** — `slowapi` или `fastapi-limiter`, чтобы кто-то не залил тебя запросами и не выжег твои API-квоты MOEX/T-Bank.
+
+**Для дипломной защиты (демо локально):**
+
+Никаких изменений не нужно — текущий `.env` подход безопасен, потому что:
+
+- Запускается только на твоём ноуте
+- Нет публичного URL
+- Никто не может вытащить ключи из браузера, потому что они не покидают backend
+
+**Для полноценного SaaS-деплоя (после защиты):**
+
+| Платформа | Где задавать env vars |
+| --- | --- |
+| Railway | Project → Variables → добавляешь `TINVEST_TOKEN=xxx`, шифруется at rest |
+| Render | Service → Environment → Add environment variable |
+| Fly.io | `fly secrets set TINVEST_TOKEN=xxx` через CLI |
+| Vercel (frontend) | Project Settings → Environment Variables (только публичные `VITE_*`) |
+
+**Дополнительно для prod:**
+
+- Ротация ключей раз в 3–6 месяцев
+- Логи — без печати raw API responses (уже отмечено как баг в "Код" → "Логирование сырого ответа API")
+- HTTPS обязателен (даёт автоматически Railway/Render/Vercel)
+- Sentry/PostHog для error tracking (бесплатные тиры хватает)
+
+Время на security baseline: 2–3 часа на настройку CORS + rate limiting + env vars в провайдере.
 
 **Средний приоритет**
 
