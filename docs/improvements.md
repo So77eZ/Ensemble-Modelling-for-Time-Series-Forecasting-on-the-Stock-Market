@@ -133,6 +133,68 @@ backend/                         frontend/
 
 Время: 30–40 часов (~1.5–2 недели вечеров для уверенного фронтендера).
 
+**Docker для SaaS-деплоя**
+
+До защиты Docker **не нужен** — добавит сложности (GPU pass-through через WSL2 + nvidia-docker под Windows) без реального выигрыша при локальном запуске. После защиты, при деплое — нужен для backend.
+
+Два пути деплоя:
+
+| Подход | Когда выбрать | Минусы |
+| --- | --- | --- |
+| **Pre-compute + read JSON** (рекомендуемый) | Если важна простота и дешевизна (~$0 при free tier Railway/Vercel) | Нет live "запустить на новой дате" — UI читает только pre-computed результаты |
+| **VPS с GPU + полный Docker** | Если хочется реальных live-прогонов через UI | ~$0.5/час GPU аренда (Selectel/Lambda Labs/RunPod), сложнее настройка |
+
+**Основной путь — pre-compute локально + лёгкий контейнер для бэка:**
+
+1. Локально на RTX 5070 Ti прогоняешь walk-forward для всех тикеров и интересующих дат, сохраняешь `outputs/stock_modelv16/multidate/*.json` в репозиторий или S3-bucket
+2. Backend читает эти JSON, не запускает ML
+3. Контейнер не содержит `torch`, `xgboost`, `optuna`, `arch` — только `fastapi`, `pandas`, `pydantic`
+4. Размер образа ~150MB (вместо ~5GB с PyTorch+CUDA), деплой занимает 30 секунд, попадает в free tier Railway/Render
+
+Минимальный Dockerfile:
+
+```dockerfile
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY requirements-prod.txt .
+RUN pip install --no-cache-dir -r requirements-prod.txt
+
+COPY backend/ ./backend/
+COPY outputs/stock_modelv16/multidate/ ./data/multidate/
+COPY outputs/stock_modelv16/hyperparams/ ./data/hyperparams/
+
+ENV PYTHONUNBUFFERED=1
+EXPOSE 8000
+
+CMD ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+`requirements-prod.txt` — подмножество без ML-зависимостей:
+
+```text
+fastapi==0.115.0
+uvicorn[standard]==0.30.0
+pydantic==2.9.0
+pandas==2.2.0
+numpy==1.26.0
+python-dotenv==1.0.0
+```
+
+Время: 2–3 часа на Dockerfile + настройку CI на GitHub Actions для auto-build + deploy в Railway.
+
+**Опциональный путь 2 — VPS с GPU (когда захочется live-прогнозов):**
+
+Если после защиты захочется иметь полноценный live-pipeline без pre-compute:
+
+- VPS с GPU: Selectel (~₽15k/мес за RTX 3060), Lambda Labs (~$0.5/час on-demand), RunPod (~$0.3/час A4000)
+- Базовый образ `nvidia/cuda:13.0-runtime-ubuntu22.04`
+- Полный `requirements.txt` с PyTorch+cu130, XGBoost, Optuna, arch
+- Размер образа ~5GB, build ~10 минут
+- Имеет смысл только если будет реальный пользовательский трафик с запросами на новые даты — для портфолио избыточно
+
+Frontend в обоих случаях деплоится без Docker — Vercel/Netlify билдят React/Vue из source автоматически.
+
 **Почему backend на Python, а не Go**
 
 Соблазнительно сделать backend на Go для портфолио (быстрее, single binary, goroutines), но для этого проекта **Python FastAPI — правильный выбор**:
