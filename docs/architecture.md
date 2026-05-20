@@ -4,20 +4,58 @@
 
 ## Обзор
 
-Система прогнозирования рыночных цен акций российского рынка (MOEX). Реализует стэкинг-ансамбль LSTM + XGBoost + Ridge meta-learner с доверительными интервалами (квантильная регрессия или GARCH(1,1)). Поддерживает три режима: одиночный прогноз, одиночный бэктест и multi-date backtest на N исторических датах. Начиная с v15 включает time-varying макропризнаки (USD/RUB, ставка ЦБ, Brent), Granger pre-screening и статистическую диагностику остатков. С v15.1 — фиксированный seed (`RANDOM_SEED=42`) и метрика Direction Accuracy. С v15.2 — признаки сезонности (`day_of_week`, `month`, `quarter`). С v15.3 — Ridge мета-леарнер с интерпретируемыми весами. С v15.4 — автосклейка YNDX+YDEX и Ljung-Box guard для коротких рядов. С v15.6 — Optuna-оптимизация alpha Ridge: 20-trial поиск на накопленных OOS-данных walk-forward. С v15.7 — IMOEX и RTSI как time-varying признаки рыночного контекста. С v15.8 — LSTM Ensemble по seeds (N=3): три модели с разными инициализациями, усреднение до Ridge. С v15.9 — дивидендные time-varying признаки через MOEX ISS (`fundamentals_loader.py`): `div_days_to_next`, `div_next_amount`, `div_days_since_last`; работает для любого тикера MOEX; look-ahead bias исключён окном 45 дней. С v15.10 — `Ridge(positive=True)` (запрет инверсии LSTM), LSTM EPOCHS 10→100, умное сообщение Ljung-Box (различает ARCH от momentum), SSL retry. С v15.11 — раздельный feature set (LSTM 7 фич, XGB 39): дублирование убивало OOS-полезность LSTM, после фикса ненулевых LSTM_coef стало 6/15 вместо 1/15. С v15.12 — дамми `is_post_restructure` для YDEX (структурный шок 2024-07). С v15.13 — TCSG/T автопереход на новый тикер (R² +95pp в среднем после фикса). С v15.14 — миграция LSTM с TensorFlow на **PyTorch GPU** (RTX 50 Blackwell, CUDA 12.8): время прогона ×4, на seed-уровне ×5; защитная валидация размера данных (HARD < 200, WARN < 500 sequences); очистка GPU-памяти после walk-forward.
+Система прогнозирования цен акций MOEX на 1–3 дня вперёд. Стэкинг-ансамбль:
+LSTM (PyTorch GPU) + XGBoost → Ridge meta-learner с доверительными интервалами
+(квантильная регрессия или GARCH(1,1)). Архитектура — Direct Multi-Step (MIMO):
+для каждого горизонта обучается независимый ансамбль с собственным `look_back`.
 
-### Новое в v16
+**Режимы работы:**
 
-- **Relative features (4 фичи)** для XGB: `Close_to_SMA10`, `Close_to_EMA20`, `BB_Position`, `Close_ZScore_20` — масштаб-инвариантные индикаторы режима цены. Вектор признаков для XGB: 39 → 43.
-- **R²-scoring для Ridge alpha** (вместо `neg_mean_squared_error`) — оживляет LSTM в стэкинге за счёт штрафа Optuna и за абсолютную ошибку, и за слабую корреляцию. На SBER: LSTM weight стал ненулевым на 3/5 датах вместо 0/5.
-- **PyTorch cu130** — соответствие системному CUDA Toolkit 13.x на RTX 5070 Ti.
-- **GARCH(1,1) для адаптивных CI** (`ci_mode='garch'`) — `arch.arch_model` с `mean='Zero'`, `dist='normal'`, обучается на OOS-остатках в рублях. CI = pred ± 1.645·σ_t (90%). Шире в кризис, уже в штиль — решает проблему ARCH-эффекта (Ljung-Box на `|residuals|` p≈0), который игнорируют CI постоянной ширины.
-- **Multi-date backtest** (`--multi-backtest N`) — автоматический прогон бэктеста на N исторических датах (первый торговый день каждого из последних N месяцев). Агрегирует Direction Accuracy с Wilson 95% CI, IC (Spearman) на N×3 наблюдениях, CI coverage, % случаев когда модель бьёт Naive. Решает проблему недостаточной статистической мощности одиночного бэктеста (3 точки → монетка). Macro/dividend данные загружаются один раз на весь диапазон. Результаты в `outputs/stock_modelv16/multidate/`.
-- **Адаптивная плотность date-ticks на графиках** — геометрически растущий шаг от текущей даты в прошлое: последняя пара недель почти ежедневно, дальше еженедельно, ещё дальше — раз в месяц/два.
-- **Целочисленная ось X на графиках** — устраняет визуальный разрыв между концом исторической линии и прогнозом из-за выходных/праздников; русские подписи легенды.
-- **Полное название тикера** в FORECAST SUMMARY и на графике — через `MOEX ISS SHORTNAME` (`fundamentals_loader.get_ticker_shortname`).
-- **Per-horizon look_back** (`LSTM_LOOK_BACK_PER_HORIZON = {1: 30, 2: 30, 3: 60}`) — каждый из трёх MIMO-пайплайнов получает свой контекст. Эксперимент v16-experiments показал: длинный контекст (LB=60) даёт +25pp Direction Accuracy и IC +0.46 на h=3 SBER, но регрессирует h=1/h=2. Гибрид: baseline LB=30 для коротких горизонтов, LB=60 + per-horizon Optuna HP только для h=3. `save_hyperparams`/`load_hyperparams` поддерживают `horizon` параметр (`{ticker}_h{horizon}_hyperparams.json` с fallback на общий `{ticker}_hyperparams.json`); схема версионирована (`schema_version: 2`), запись атомарная через `.tmp` + `os.replace`, helper `_resolve_horizon_hp` инкапсулирует трёхуровневый fallback.
-- **Дивидендные фичи всегда в feature set** — `_FUND_DIV_COLS` (`div_days_to_next`, `div_next_amount`, `div_days_since_last`) исключены из Granger pre-screening. Granger стабильно отбрасывал их с p > 0.5 из-за низкой вариативности (sentinel 999 ~88% времени) и нелинейности дивидендных patterns (pre-div run-up, ex-div gap), которые лучше захватываются деревьями XGB. Реальный эффект на прогноз включается при попадании даты в 45-дневное окно перед реестром (`_ANNOUNCE_WINDOW`). XGB-shape вырос с (n, 30, 43) до (n, 30, 46).
+- Одиночный прогноз на будущее (1–3 дня от текущей даты)
+- Бэктест на исторической дате со сравнением с фактическими ценами
+- Multi-date backtest на N датах: Direction Accuracy с Wilson 95% CI, IC (Spearman),
+  CI coverage, % случаев превосходства над Naive
+
+**Источники данных:**
+
+- MOEX (moexalgo + ISS REST fallback) — OHLCV
+- T-Bank Invest API — фундаментальные показатели
+- ЦБ РФ XML/SOAP — USD/RUB, ключевая ставка
+- MOEX ISS — Brent, IMOEX, RTSI, дивидендные события, SHORTNAME
+
+**Признаки** (динамически 36–46):
+
+- OHLCV + технические индикаторы (SMA, EMA, RSI, MACD, BB, ATR, Stochastic, ADX, momentum)
+- Returns-фичи (скользящая волатильность и momentum доходностей)
+- Relative features (масштаб-инвариантные: `Close_to_SMA10`, `Close_to_EMA20`,
+  `BB_Position`, `Close_ZScore_20`)
+- Фундаментальные (P/E, P/B, ROE, beta, market cap, dividend yield)
+- Time-varying макро (USD/RUB, ставка ЦБ, Brent, IMOEX, RTSI)
+- Дивидендные time-varying (`div_days_to_next`, `div_next_amount`,
+  `div_days_since_last`; look-ahead bias исключён окном 45 дней; работает для
+  любого тикера MOEX)
+- Сезонность (`day_of_week`, `month`, `quarter`)
+
+**Дисциплины качества:**
+
+- Walk-forward валидация (3 сплита), фиксированный seed `RANDOM_SEED=42`
+- Granger pre-screening для macro (дивиденды всегда in — нелинейность лучше ловит XGB)
+- Ljung-Box guard на OOS-остатках (различает ARCH от momentum, skip для коротких рядов)
+- LSTM Ensemble по 3 seeds [42, 7, 123], усреднение до Ridge
+- `Ridge(positive=True)` — запрет инверсии LSTM в стэкинге
+- Optuna alpha Ridge (R²-scoring, 20 trials на накопленных OOS-данных)
+- Per-horizon look_back и per-horizon HP-файлы
+  (`{ticker}_h{horizon}_hyperparams.json` с fallback на общий
+  `{ticker}_hyperparams.json`, schema versioning, атомарная запись через
+  `.tmp` + `os.replace`)
+- Адаптивные CI через GARCH(1,1) на OOS-остатках (`ci_mode='garch'`)
+- Автосклейка тикеров при реструктуризации (YNDX↔YDEX, TCSG↔T),
+  дамми `is_post_restructure` для структурных шоков
+
+**Метрики бэктеста** — Error %, Naive Error %, R² on returns, IC (Spearman),
+CI Coverage, Direction Accuracy.
+
+История версий: см. [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -95,8 +133,8 @@ python .\stock_modelv15.py --ticker SBER --backtest 2026-05-05 --no-gui
 | Переменная           | По умолчанию | Описание                                |
 | -------------------- | ------------ | --------------------------------------- |
 | `LSTM_LOOK_BACK`     | `30`         | Длина входной последовательности (дней) |
-| `LSTM_EPOCHS`        | `100`        | Максимальное число эпох обучения (с v15.10) |
-| `LSTM_PATIENCE`      | `10`         | Терпение для EarlyStopping (с v15.10)       |
+| `LSTM_EPOCHS`        | `100`        | Максимальное число эпох обучения        |
+| `LSTM_PATIENCE`      | `10`         | Терпение для EarlyStopping              |
 | `LSTM_BATCH_SIZE`    | `32`         | Размер батча                            |
 | `LSTM_LEARNING_RATE` | `0.001`      | Скорость обучения Adam                  |
 | `LSTM_DROPOUT_RATE`  | `0.2`        | Доля дропаута                           |
@@ -155,19 +193,19 @@ python .\stock_modelv15.py --ticker SBER --backtest 2026-05-05 --no-gui
 │  Stochastic K/D, ADX(14), Momentum(10),                         │
 │  PriceChange(1d, 5d)                                            │
 │                                                                 │
-│  Returns-фичи (v13.6):                                          │
+│  Returns-фичи:                                                  │
 │  Vol_Return_5/10/20 (скользящая волатильность доходностей)      │
 │  Return_MA_5/10 (momentum на доходностях)                       │
 │                                                                 │
 │  Фундаментальные (из Tinkoff API):                              │
 │  market_cap, roe, dividend_yield, pe_ratio, pb_ratio, beta      │
 │                                                                 │
-│  Макропризнаки time-varying (v15, macro_loader.py):             │
+│  Макропризнаки time-varying (macro_loader.py):                  │
 │  usd_rub_hist (ЦБ РФ XML API), cbr_rate (SOAP DailyInfo.asmx)  │
 │  brent_price (MOEX ISS BRN фьючерс)                             │
 │  imoex, rtsi (MOEX ISS candles, engines/stock/markets/index)    │
 │                                                                 │
-│  Дивидендные time-varying (v15.9, fundamentals_loader.py):      │
+│  Дивидендные time-varying (fundamentals_loader.py):             │
 │  div_days_to_next  — обратный отсчёт до реестра (sentinel 999)  │
 │  div_next_amount   — объявленный дивиденд ₽ (0 если нет)        │
 │  div_days_since_last — дней с последней отсечки (sentinel 999)  │
@@ -176,7 +214,7 @@ python .\stock_modelv15.py --ticker SBER --backtest 2026-05-05 --no-gui
 │                                                                 │
 │  Granger pre-screening: все macro + div с p ≥ 0.05 исключаются │
 │                                                                 │
-│  Сезонность (v15.2):                                            │
+│  Сезонность:                                                    │
 │  day_of_week (0=пн…4=пт), month (1–12), quarter (1–4)          │
 │  вычисляются в update_technical_indicators из Date              │
 │                                                                 │
@@ -211,7 +249,7 @@ python .\stock_modelv15.py --ticker SBER --backtest 2026-05-05 --no-gui
 │                     АНСАМБЛЕВАЯ МОДЕЛЬ                          │
 │                                                                 │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Уровень 0 — базовые модели (раздельный feature set v15.11) │
+│  │  Уровень 0 — базовые модели (раздельный feature set)        │
 │  │                                                          │   │
 │  │  ┌─────────────────────┐  ┌─────────────────────────┐    │   │
 │  │  │  LSTMRegressor      │  │     XGBoost Regressor   │    │   │
@@ -233,12 +271,12 @@ python .\stock_modelv15.py --ticker SBER --backtest 2026-05-05 --no-gui
 │  └──────────────────────────┼───────────────────────────────┘   │
 │                             ▼                                   │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Уровень 0.5 — LSTM Ensemble (v15.8)                     │   │
+│  │  Уровень 0.5 — LSTM Ensemble                             │   │
 │  │  LSTM×3 seeds [42,7,123] → среднее lstm_avg_pred         │   │
 │  └──────────────────────────┼───────────────────────────────┘   │
 │                             ▼                                   │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Уровень 1 — Meta-Learner (Ridge positive=True, v15.10)  │   │
+│  │  Уровень 1 — Meta-Learner (Ridge positive=True)          │   │
 │  │  Вход: [lstm_avg_pred, xgb_pred] (2 признака)            │   │
 │  │  alpha: Optuna 20-trial log-uniform [1e-3,100] на OOS    │   │
 │  │  Ridge(alpha=best, positive=True) → прогноз Close        │   │
@@ -334,7 +372,7 @@ python .\stock_modelv15.py --ticker SBER --backtest 2026-05-05 --no-gui
 
 | Библиотека | Версия | Роль |
 | --- | --- | --- |
-| `torch` | 2.11+cu128 | LSTM-нейросеть (PyTorch с v15.14, CUDA 12.8 для Windows native GPU; класс `LSTMRegressor` + `train_lstm_torch`) |
+| `torch` | 2.11+cu130 | LSTM-нейросеть (PyTorch, CUDA 13.0 для Windows native GPU; класс `LSTMRegressor` + `train_lstm_torch`) |
 | `xgboost` | 3.x+ | Градиентный бустинг + квантильная регрессия; GPU через `device='cuda'` |
 | `optuna` | 3.x | Байесовская оптимизация гиперпараметров |
 | `scikit-learn` | 1.x | `MinMaxScaler`, метрики (RMSE, MAE, R²) |
