@@ -2147,6 +2147,8 @@ if __name__ == '__main__':
     parser.add_argument('--multi-backtest', type=int, default=None, metavar='N',
                         help='Multi-date backtest на N исторических датах (первый торговый день каждого из последних N месяцев). '
                              'Сохраняет агрегированный отчёт с Direction Accuracy + Wilson CI, IC, CI coverage.')
+    parser.add_argument('--start-date', type=str, default='2014-01-01', help='Data start date YYYY-MM-DD')
+    parser.add_argument('--end-date', type=str, default=None, help='Data end date YYYY-MM-DD (default: today)')
     args = parser.parse_args()
 
     if args.multi_backtest and not args.ticker:
@@ -2178,6 +2180,8 @@ if __name__ == '__main__':
             'history_window': args.history_window,
             'multi_backtest': bool(args.multi_backtest),
             'n_dates': args.multi_backtest or 0,
+            'start_date': args.start_date,
+            'end_date': args.end_date,
         }
     else:
         # Interactive mode
@@ -2227,12 +2231,8 @@ if __name__ == '__main__':
     ci_mode = user_params.get('ci_mode', 'wide')
 
     # Определяем даты загрузки данных
-    start_date = '2014-01-01'
-    if backtest_mode:
-        # Загружаем данные до текущей даты, чтобы было с чем сравнить
-        end_date = datetime.now().strftime('%Y-%m-%d')
-    else:
-        end_date = datetime.now().strftime('%Y-%m-%d')
+    start_date = user_params.get('start_date', '2014-01-01')
+    end_date = user_params.get('end_date') or datetime.now().strftime('%Y-%m-%d')
     
     logger.info(f"Data load range: {start_date} to {end_date}")
 
@@ -2509,6 +2509,42 @@ if __name__ == '__main__':
                 fund_data=shared_funds,
                 div_data=shared_div,
             )
+
+        # ============================================================
+        # Benchmark metrics dump (v13 vs v16 paper comparison)
+        # ============================================================
+        bench_dir = os.path.join(MODEL_OUTPUT_DIR, 'benchmark')
+        os.makedirs(bench_dir, exist_ok=True)
+        bench_path = os.path.join(bench_dir, f'{ticker}_metrics.json')
+
+        look_back_h1 = LSTM_LOOK_BACK_PER_HORIZON.get(1, LSTM_LOOK_BACK)
+        n_seq_h1 = max(1, len(data) - look_back_h1 - 1)
+        last_test_start_seq = int(0.9 * n_seq_h1)
+        last_test_start_data = last_test_start_seq + look_back_h1
+        last_test_end_data = len(data) - 1
+
+        bench_payload = {
+            'ticker': ticker,
+            'model': 'v16_direct_mimo',
+            'per_horizon_walk_forward': {
+                str(h): {
+                    'rmse': float(all_results[h][6]),
+                    'mae': float(all_results[h][7]),
+                    'r2': float(all_results[h][8]),
+                } for h in [1, 2, 3]
+            },
+            'test_data_idx_range': [int(last_test_start_data), int(last_test_end_data)],
+            'test_dates': [
+                str(data['Date'].iloc[last_test_start_data])[:10] if 'Date' in data.columns and last_test_start_data < len(data) else None,
+                str(data['Date'].iloc[min(last_test_end_data, len(data) - 1)])[:10] if 'Date' in data.columns else None,
+            ],
+            'data_size': int(len(data)),
+            'start_date': start_date,
+            'end_date': end_date,
+        }
+        with open(bench_path, 'w', encoding='utf-8') as fh:
+            json.dump(bench_payload, fh, ensure_ascii=False, indent=2)
+        logger.info(f"Benchmark metrics saved: {bench_path}")
 
         merged = merge_horizon_results(all_results)
         if merged is not None:

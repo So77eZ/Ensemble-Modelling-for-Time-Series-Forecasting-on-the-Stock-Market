@@ -595,6 +595,70 @@ def optimize_xgboost_params(X_train, y_train, n_trials=20):
 # MODEL TRAINING
 # ============================================================================
 
+def _recurrent_rollout_eval(models, data, scaler, close_scaler, features,
+                             test_start_data_idx, test_end_data_idx, look_back, max_horizon=3):
+    """Recurrent multi-step rollout evaluation на test-фолде walk-forward.
+
+    Применяет ту же recurrent-стратегию, что и v13 forecast block: предсказывает t+1,
+    синтезирует новый row через v13's update_technical_indicators_single_row, предсказывает t+2,
+    повторяет до max_horizon.
+
+    Returns: dict {h: {'preds': [...], 'trues': [...]}}
+    """
+    best_model, best_xgb_model, best_meta_learner = models[0], models[1], models[2]
+
+    out = {h: {'preds': [], 'trues': []} for h in range(1, max_horizon + 1)}
+
+    n_samples = 0
+    for actual_idx in range(test_start_data_idx, test_end_data_idx):
+        if actual_idx + max_horizon - 1 >= len(data):
+            break
+        # need actual close values for h=1..max_horizon
+        true_vals = [data['Close'].iloc[actual_idx + h - 1] for h in range(1, max_horizon + 1)]
+
+        temp_df = data.iloc[:actual_idx].copy().reset_index(drop=True)
+
+        for h_step in range(1, max_horizon + 1):
+            last_features = temp_df[features].tail(look_back)
+            last_scaled = scaler.transform(last_features)
+
+            lstm_in = last_scaled.reshape(1, look_back, len(features))
+            lstm_pred_scaled = best_model.predict(lstm_in, verbose=0)[0][0]
+
+            xgb_in = last_scaled.reshape(1, -1)
+            xgb_pred_scaled = best_xgb_model.predict(xgb_in)[0]
+
+            meta_in = np.array([[lstm_pred_scaled, xgb_pred_scaled]])
+            pred_close_scaled = best_meta_learner.predict(meta_in)[0]
+            pred_close = float(close_scaler.inverse_transform([[pred_close_scaled]])[0][0])
+
+            out[h_step]['preds'].append(pred_close)
+            out[h_step]['trues'].append(true_vals[h_step - 1])
+
+            prev_close = float(temp_df['Close'].iloc[-1])
+            volatility = abs(prev_close - float(temp_df['Close'].iloc[-2])) if len(temp_df) > 1 else pred_close * 0.01
+
+            new_data_row = {
+                'Open': prev_close,
+                'High': max(prev_close, pred_close) + volatility * 0.3,
+                'Low': min(prev_close, pred_close) - volatility * 0.3,
+                'Close': pred_close,
+                'Volume': float(temp_df['Volume'].iloc[-1])
+            }
+            if 'Date' in temp_df.columns:
+                new_data_row['Date'] = pd.NaT
+            for col in features:
+                if col not in ('Open', 'High', 'Low', 'Close', 'Volume') and col in temp_df.columns:
+                    new_data_row[col] = float(temp_df[col].iloc[-1])
+
+            temp_df = pd.concat([temp_df, pd.DataFrame([new_data_row])], ignore_index=True)
+            temp_df = update_technical_indicators_single_row(temp_df, len(temp_df) - 1)
+
+        n_samples += 1
+
+    return out, n_samples
+
+
 def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_params, backtest_mode=False, backtest_date=None):
     logger.info("=" * 60)
     logger.info(f"PREPARING DATA FOR {ticker}")
@@ -793,9 +857,68 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     avg_rmse = np.mean(rmses)
     avg_mae = np.mean(maes)
     avg_r2 = np.mean(r2s)
-    logger.info(f"Average Metrics: RMSE={avg_rmse:.4f}, MAE={avg_mae:.4f}, R2={avg_r2:.4f}")
+    logger.info(f"Average Metrics (h=1 walk-forward): RMSE={avg_rmse:.4f}, MAE={avg_mae:.4f}, R2={avg_r2:.4f}")
 
     best_model, best_xgb_model, best_meta_learner, best_lower_model, best_median_model, best_upper_model = models[-1]
+
+    # ============================================================
+    # Recurrent rollout evaluation for h=2, h=3 (v13 recurrent strategy)
+    # Evaluates on last walk-forward split's test set.
+    # ============================================================
+    last_train_end_seq, last_test_end_seq = splits[-1]
+    last_test_start_data_idx = last_train_end_seq + LSTM_LOOK_BACK
+    last_test_end_data_idx = last_test_end_seq + LSTM_LOOK_BACK
+
+    logger.info("=" * 60)
+    logger.info("RECURRENT ROLLOUT EVAL (h=1, h=2, h=3) on last test fold")
+    logger.info(f"Data index range: [{last_test_start_data_idx}, {last_test_end_data_idx})")
+    logger.info("=" * 60)
+
+    rollout_out, n_rollout = _recurrent_rollout_eval(
+        models=(best_model, best_xgb_model, best_meta_learner),
+        data=data,
+        scaler=scaler,
+        close_scaler=close_scaler,
+        features=features,
+        test_start_data_idx=last_test_start_data_idx,
+        test_end_data_idx=last_test_end_data_idx,
+        look_back=LSTM_LOOK_BACK,
+        max_horizon=3,
+    )
+
+    rollout_metrics = {}
+    for h in (1, 2, 3):
+        preds = np.array(rollout_out[h]['preds'])
+        trues = np.array(rollout_out[h]['trues'])
+        rmse_h = float(np.sqrt(mean_squared_error(trues, preds)))
+        mae_h = float(mean_absolute_error(trues, preds))
+        r2_h = float(r2_score(trues, preds))
+        rollout_metrics[h] = {'rmse': rmse_h, 'mae': mae_h, 'r2': r2_h, 'n': len(preds)}
+        logger.info(f"  h={h}: RMSE={rmse_h:.4f}  MAE={mae_h:.4f}  R²={r2_h:.4f}  (n={len(preds)})")
+
+    # Persist for benchmark consumption
+    bench_dir = os.path.join(MODEL_OUTPUT_DIR, 'benchmark')
+    os.makedirs(bench_dir, exist_ok=True)
+    bench_path = os.path.join(bench_dir, f'{ticker}_metrics.json')
+    with open(bench_path, 'w', encoding='utf-8') as fh:
+        json.dump({
+            'ticker': ticker,
+            'model': 'v13_recurrent',
+            'walk_forward_h1': {
+                'rmse': float(avg_rmse), 'mae': float(avg_mae), 'r2': float(avg_r2),
+                'per_split_rmse': [float(x) for x in rmses],
+                'per_split_mae': [float(x) for x in maes],
+                'per_split_r2': [float(x) for x in r2s],
+            },
+            'rollout_per_horizon': rollout_metrics,
+            'n_rollout_samples': int(n_rollout),
+            'test_data_idx_range': [int(last_test_start_data_idx), int(last_test_end_data_idx)],
+            'test_dates': [
+                str(data['Date'].iloc[last_test_start_data_idx])[:10] if 'Date' in data.columns else None,
+                str(data['Date'].iloc[min(last_test_end_data_idx - 1, len(data) - 1)])[:10] if 'Date' in data.columns else None,
+            ],
+        }, fh, ensure_ascii=False, indent=2)
+    logger.info(f"Benchmark metrics saved: {bench_path}")
 
     logger.info("Generating forecasts...")
     forecast_horizons = [1, 2, 3]
@@ -1114,6 +1237,8 @@ if __name__ == '__main__':
     parser.add_argument('--backtest', type=str, default=None, help='Backtest date (YYYY-MM-DD)')
     parser.add_argument('--optimize', action='store_true', help='Run Optuna optimization')
     parser.add_argument('--trials', type=int, default=20, help='Optuna trials')
+    parser.add_argument('--start-date', type=str, default='2014-01-01', help='Data start date YYYY-MM-DD')
+    parser.add_argument('--end-date', type=str, default=None, help='Data end date YYYY-MM-DD (default: today)')
     args = parser.parse_args()
 
     if args.no_gui:
@@ -1149,12 +1274,8 @@ if __name__ == '__main__':
     show_plot = user_params['show_plot']
 
     # Определяем даты загрузки данных
-    start_date = '2014-01-01'
-    if backtest_mode:
-        # Загружаем данные до текущей даты, чтобы было с чем сравнить
-        end_date = datetime.now().strftime('%Y-%m-%d')
-    else:
-        end_date = datetime.now().strftime('%Y-%m-%d')
+    start_date = args.start_date
+    end_date = args.end_date if args.end_date else datetime.now().strftime('%Y-%m-%d')
     
     logger.info(f"Data load range: {start_date} to {end_date}")
 
