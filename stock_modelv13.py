@@ -696,6 +696,12 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         # 'eps_growth', 'sales_growth', 'operating_margin', 'net_profit_margin',
         # 'ps_ratio', 'price_cash_flow',
     ]
+    # Безопасный fallback: пропустить отсутствующие колонки (например, если Tinkoff API упал)
+    missing_features = [f for f in features if f not in data.columns]
+    if missing_features:
+        logger.warning(f"Missing features (заполнены нулями): {missing_features}")
+        for f in missing_features:
+            data[f] = 0.0
     data = data[['Date'] + features].dropna()
     
     # В режиме бэктеста обрезаем данные до указанной даты
@@ -732,6 +738,9 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     rmses, maes, r2s = [], [], []
     final_pred = []
     models = []
+    # Recurrent rollout аккумуляторы (по всем фолдам, для academic-grade per-horizon оценки)
+    rollout_acc = {h: {'preds': [], 'trues': []} for h in (1, 2, 3)}
+    rollout_per_split_metrics = []  # для отчёта per-split
 
     for i, (train_end, test_end) in enumerate(splits, 1):
         logger.info("\n" + "=" * 60)
@@ -854,42 +863,60 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
         final_pred.extend(test_preds_inv)
         models.append((lstm_model, xgb_model, meta_learner, lower_model, median_model, upper_model))
 
+        # ============================================================
+        # Recurrent rollout этого фолда (h=1, h=2, h=3) — те же модели,
+        # что обучены для h=1, recurrent extrapolation через v13 strategy.
+        # ============================================================
+        fold_test_start_data = train_end + LSTM_LOOK_BACK
+        fold_test_end_data = test_end + LSTM_LOOK_BACK
+        logger.info(f"  → Recurrent rollout fold {i}: data idx [{fold_test_start_data}, {fold_test_end_data})")
+
+        fold_rollout, n_fold = _recurrent_rollout_eval(
+            models=(lstm_model, xgb_model, meta_learner),
+            data=data,
+            scaler=scaler,
+            close_scaler=close_scaler,
+            features=features,
+            test_start_data_idx=fold_test_start_data,
+            test_end_data_idx=fold_test_end_data,
+            look_back=LSTM_LOOK_BACK,
+            max_horizon=3,
+        )
+
+        per_split_metrics = {}
+        for h in (1, 2, 3):
+            preds_arr = np.array(fold_rollout[h]['preds'])
+            trues_arr = np.array(fold_rollout[h]['trues'])
+            rollout_acc[h]['preds'].extend(preds_arr.tolist())
+            rollout_acc[h]['trues'].extend(trues_arr.tolist())
+            if len(preds_arr) > 0:
+                rmse_h = float(np.sqrt(mean_squared_error(trues_arr, preds_arr)))
+                mae_h = float(mean_absolute_error(trues_arr, preds_arr))
+                r2_h = float(r2_score(trues_arr, preds_arr))
+                per_split_metrics[h] = {'rmse': rmse_h, 'mae': mae_h, 'r2': r2_h, 'n': len(preds_arr)}
+                logger.info(f"    fold{i} h={h}: RMSE={rmse_h:.4f}  MAE={mae_h:.4f}  R²={r2_h:.4f}  (n={len(preds_arr)})")
+        rollout_per_split_metrics.append(per_split_metrics)
+
     avg_rmse = np.mean(rmses)
     avg_mae = np.mean(maes)
     avg_r2 = np.mean(r2s)
-    logger.info(f"Average Metrics (h=1 walk-forward): RMSE={avg_rmse:.4f}, MAE={avg_mae:.4f}, R2={avg_r2:.4f}")
+    logger.info(f"Average Metrics (h=1 walk-forward, 3 folds): RMSE={avg_rmse:.4f}, MAE={avg_mae:.4f}, R2={avg_r2:.4f}")
 
     best_model, best_xgb_model, best_meta_learner, best_lower_model, best_median_model, best_upper_model = models[-1]
 
     # ============================================================
-    # Recurrent rollout evaluation for h=2, h=3 (v13 recurrent strategy)
-    # Evaluates on last walk-forward split's test set.
+    # Aggregated rollout metrics — averaged over all 3 folds (по сэмплам)
     # ============================================================
-    last_train_end_seq, last_test_end_seq = splits[-1]
-    last_test_start_data_idx = last_train_end_seq + LSTM_LOOK_BACK
-    last_test_end_data_idx = last_test_end_seq + LSTM_LOOK_BACK
-
     logger.info("=" * 60)
-    logger.info("RECURRENT ROLLOUT EVAL (h=1, h=2, h=3) on last test fold")
-    logger.info(f"Data index range: [{last_test_start_data_idx}, {last_test_end_data_idx})")
+    logger.info("RECURRENT ROLLOUT — AGGREGATED OVER 3 FOLDS")
     logger.info("=" * 60)
-
-    rollout_out, n_rollout = _recurrent_rollout_eval(
-        models=(best_model, best_xgb_model, best_meta_learner),
-        data=data,
-        scaler=scaler,
-        close_scaler=close_scaler,
-        features=features,
-        test_start_data_idx=last_test_start_data_idx,
-        test_end_data_idx=last_test_end_data_idx,
-        look_back=LSTM_LOOK_BACK,
-        max_horizon=3,
-    )
 
     rollout_metrics = {}
     for h in (1, 2, 3):
-        preds = np.array(rollout_out[h]['preds'])
-        trues = np.array(rollout_out[h]['trues'])
+        preds = np.array(rollout_acc[h]['preds'])
+        trues = np.array(rollout_acc[h]['trues'])
+        if len(preds) == 0:
+            continue
         rmse_h = float(np.sqrt(mean_squared_error(trues, preds)))
         mae_h = float(mean_absolute_error(trues, preds))
         r2_h = float(r2_score(trues, preds))
@@ -900,6 +927,10 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
     bench_dir = os.path.join(MODEL_OUTPUT_DIR, 'benchmark')
     os.makedirs(bench_dir, exist_ok=True)
     bench_path = os.path.join(bench_dir, f'{ticker}_metrics.json')
+    test_start_seq = splits[-1][0]
+    test_end_seq = splits[-1][1]
+    test_start_data = test_start_seq + LSTM_LOOK_BACK
+    test_end_data = test_end_seq + LSTM_LOOK_BACK
     with open(bench_path, 'w', encoding='utf-8') as fh:
         json.dump({
             'ticker': ticker,
@@ -910,13 +941,14 @@ def prepare_and_train_model(data, ticker, end_date, best_lstm_params, best_xgb_p
                 'per_split_mae': [float(x) for x in maes],
                 'per_split_r2': [float(x) for x in r2s],
             },
-            'rollout_per_horizon': rollout_metrics,
-            'n_rollout_samples': int(n_rollout),
-            'test_data_idx_range': [int(last_test_start_data_idx), int(last_test_end_data_idx)],
-            'test_dates': [
-                str(data['Date'].iloc[last_test_start_data_idx])[:10] if 'Date' in data.columns else None,
-                str(data['Date'].iloc[min(last_test_end_data_idx - 1, len(data) - 1)])[:10] if 'Date' in data.columns else None,
+            'rollout_per_horizon_aggregated': rollout_metrics,
+            'rollout_per_split': rollout_per_split_metrics,
+            'last_split_test_data_idx_range': [int(test_start_data), int(test_end_data)],
+            'last_split_test_dates': [
+                str(data['Date'].iloc[test_start_data])[:10] if 'Date' in data.columns and test_start_data < len(data) else None,
+                str(data['Date'].iloc[min(test_end_data - 1, len(data) - 1)])[:10] if 'Date' in data.columns else None,
             ],
+            'data_size': int(len(data)),
         }, fh, ensure_ascii=False, indent=2)
     logger.info(f"Benchmark metrics saved: {bench_path}")
 
